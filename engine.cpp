@@ -554,6 +554,104 @@ ProbeResult probe_classify(const std::vector<ProbeRaw>& raw, int ntracks,
     return r;
 }
 
+DamageReport classify_damage(const std::vector<ProbeSample>& defects,
+                             int lba_min, int lba_max, int ntracks) {
+    DamageReport d;
+    // Defekte einsammeln, je LBA der schlimmste Status, sortiert.
+    std::map<int,int> bad;
+    for (auto& s : defects)
+        if (s.status >= 1) { int& v = bad[s.lba]; if (s.status > v) v = s.status; }
+    d.bad_sectors = (int)bad.size();
+    if (bad.empty()) {
+        d.kind = DamageReport::None;
+        d.headline = "Keine defekten Sektoren erfasst — sauberer Rip.";
+        return d;
+    }
+    const int    spanDisc = std::max(1, lba_max - lba_min);
+    const int    CLUSTER_GAP = 16;     // nur ECHT benachbarte Sektoren = eine
+                                       // Zone (radiale Furche trifft ~1/Umdr.
+                                       // mit guten Sektoren dazwischen → bleibt
+                                       // bewusst zerlegt, nicht zu Block fusion)
+    const int    BIG_SPAN    = 150;    // ~2 s zusammenhängend = umlaufend
+    // Zusammenhängende Schadenszonen bilden.
+    struct Cl { int lo, hi, cnt, hard; };
+    std::vector<Cl> cl;
+    for (auto& kv : bad) {
+        int lba = kv.first, st = kv.second;
+        if (cl.empty() || lba - cl.back().hi > CLUSTER_GAP)
+            cl.push_back({ lba, lba, 0, 0 });
+        cl.back().hi = lba; cl.back().cnt++;
+        if (st >= 2) cl.back().hard++;
+    }
+    d.clusters = (int)cl.size();
+    int oLo = bad.begin()->first, oHi = bad.rbegin()->first;
+    int overall = std::max(1, oHi - oLo + 1);
+    std::vector<int> sizes; int big = 0; long deepWorst = -1;
+    for (auto& k : cl) {
+        sizes.push_back(k.cnt);
+        int sp = k.hi - k.lo + 1;
+        if (sp >= BIG_SPAN) ++big;
+        // tiefe Gouge: großer Block, fast nur Total-Verlust, dicht.
+        if (sp >= 80 && k.cnt >= 0.6 * sp &&
+            k.hard >= 0.8 * k.cnt) deepWorst = std::max<long>(deepWorst, sp);
+    }
+    std::sort(sizes.begin(), sizes.end());
+    int medSize = sizes[sizes.size() / 2];
+    // Mediane Lücke zwischen Clustern (≈ Sektoren/Umdrehung bei radial).
+    std::vector<int> gaps;
+    for (size_t i = 1; i < cl.size(); ++i)
+        gaps.push_back(cl[i].lo - cl[i-1].hi);
+    int medGap = gaps.empty() ? 0
+               : (std::sort(gaps.begin(), gaps.end()),
+                  gaps[gaps.size() / 2]);
+    auto trk = [&](int lba){
+        if (ntracks <= 0) return 0;
+        int t = 1 + (int)((long long)(lba - lba_min) * ntracks / spanDisc);
+        return t < 1 ? 1 : (t > ntracks ? ntracks : t);
+    };
+    // Füllgrad über die gesamte Schadensspanne: dicht = solider Block
+    // (Wisch/Gouge), dünn = periodische Einzeltreffer (radiale Furche).
+    double fill = (double)d.bad_sectors / overall;
+    bool isGouge   = deepWorst > 0;
+    // Radiale Furche: viele winzige Zonen, dünn gefüllt, regelmäßig
+    // ~1/Umdrehung (Lücke wenige Dutzend Sektoren), über weite Spanne.
+    bool isScratch = !isGouge && (int)cl.size() >= 8 && medSize <= 4 &&
+                     fill <= 0.15 && medGap >= 4 && medGap <= 96 &&
+                     overall >= 8 * (medGap + medSize);
+    // Umlaufender Wisch/Schmutz → dichte, konzentrierte Zone(n).
+    bool isScuff   = !isGouge && !isScratch && fill >= 0.35 &&
+                     ((int)cl.size() <= 4 || big >= 1);
+    std::string where = ntracks > 0
+        ? " (~Track " + std::to_string(trk(oLo)) +
+          (trk(oHi) != trk(oLo) ? "–" + std::to_string(trk(oHi)) : "") + ")"
+        : "";
+    std::string base = std::to_string(d.bad_sectors) +
+        " defekte Sektoren in " + std::to_string(d.clusters) +
+        " Zone(n)" + where + " — ";
+    if (isGouge) {
+        d.kind = DamageReport::Gouge;
+        d.headline = base + "tiefe Pit-Beschädigung (Total-Verlust, lokal).";
+        d.advice = "Physikalisches Limit — der jetzige Best-Effort-Rip ist "
+                   "vermutlich das Maximum; anderes Laufwerk kann minimal "
+                   "mehr holen, Politur hilft hier nicht.";
+    } else if (isScratch) {
+        d.kind = DamageReport::Scratch;
+        d.headline = base + "radialer Kratzer (quert viele Windungen).";
+        d.advice = "Vorsichtig RADIAL polieren (Mitte→Rand, nicht im Kreis), "
+                   "dann neu rippen.";
+    } else if (isScuff) {
+        d.kind = DamageReport::Scuff;
+        d.headline = base + "umlaufender Wisch / Schmutz / Fingerabdruck.";
+        d.advice = "Disc mit weichem Tuch von der Mitte nach außen reinigen "
+                   "und neu rippen — danach meist voll lesbar.";
+    } else {
+        d.kind = DamageReport::Mixed;
+        d.headline = base + "verstreute Einzelfehler, kein klares Muster.";
+        d.advice = "Reinigen und neu rippen; bei Bestand anderes Laufwerk.";
+    }
+    return d;
+}
+
 ProbeResult disc_probe(const std::string& device,
                         const std::function<bool()>& stop,
                         const std::function<void(int,int,long)>& onSample,

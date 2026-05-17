@@ -331,6 +331,41 @@ int main() {
         fs::remove_all(dir, ec);
     }
 
+    // ── classify_damage (Schadensform aus Defekt-LBA-Muster) ───────────
+    {
+        DamageReport e = classify_damage({}, 0, 300000, 15);
+        CHECK_EQ(e.kind, DamageReport::None, "dmg leer → None");
+        CHECK_EQ(e.bad_sectors, 0, "dmg leer → 0 Sektoren");
+
+        // Ein langer zusammenhängender Block → umlaufender Wisch/Schmutz.
+        std::vector<ProbeSample> scuff;
+        for (int l = 50000; l <= 50300; ++l) scuff.push_back({ l, 1 });
+        DamageReport s = classify_damage(scuff, 0, 300000, 15);
+        CHECK_EQ(s.kind, DamageReport::Scuff, "dmg Block → Scuff");
+        CHECK_EQ(s.clusters, 1, "dmg Scuff 1 Cluster");
+        CHECK_EQ(s.bad_sectors, 301, "dmg Scuff 301 Sektoren");
+        CHECK(!s.advice.empty(), "dmg Scuff hat Empfehlung");
+
+        // Viele winzige Cluster, regelmäßig ~1/Umdrehung → radialer Kratzer.
+        std::vector<ProbeSample> scr;
+        for (int i = 0; i < 60; ++i) scr.push_back({ 30000 + i * 20, 2 });
+        DamageReport sc = classify_damage(scr, 0, 300000, 15);
+        CHECK_EQ(sc.kind, DamageReport::Scratch, "dmg periodisch → Scratch");
+        CHECK_EQ(sc.clusters, 60, "dmg Scratch 60 Cluster");
+
+        // Dichter, fast nur Total-Verlust, lokal → tiefe Gouge.
+        std::vector<ProbeSample> gg;
+        for (int l = 80000; l <= 80120; ++l) gg.push_back({ l, 2 });
+        DamageReport gd = classify_damage(gg, 0, 300000, 15);
+        CHECK_EQ(gd.kind, DamageReport::Gouge, "dmg dichter Block → Gouge");
+
+        // Wenige verstreute Einzelfehler → kein klares Muster (Mixed).
+        std::vector<ProbeSample> few = { {1000,1},{9000,2},{50000,1} };
+        DamageReport fw = classify_damage(few, 0, 300000, 15);
+        CHECK_EQ(fw.kind, DamageReport::Mixed, "dmg verstreut → Mixed");
+        CHECK_EQ(fw.bad_sectors, 3, "dmg verstreut 3 Sektoren");
+    }
+
     std::printf("\n%d OK, %d FAIL\n", g_ok, g_fail);
     return g_fail ? 1 : 0;
 }

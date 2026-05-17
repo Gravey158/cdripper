@@ -553,6 +553,9 @@ void Pipeline::process_disc(Drive& drv, const std::atomic<bool>& stop,
     // welcher lief zuletzt an (RIPSTART) — für Hänger-Erkennung.
     std::vector<int> rip_settled;
     std::vector<int> rip_failed;             // Rip-Stufe: Hänger/Lesefehler
+    std::vector<cdr::ProbeSample> rip_defmap; // sektorgenaue DEFECT-LBAs
+                                              // (volle Auflösung, für die
+                                              // Schadensform-Diagnose)
     int last_started = 0;
     int rip_done_cnt = 0;                     // erledigte rippbare Tracks
     int rippable_total = -1;                  // n minus vor-übersprungene
@@ -665,9 +668,11 @@ void Pipeline::process_disc(Drive& drv, const std::atomic<bool>& stop,
             }
         } else if (ln.rfind("DEFECT ", 0) == 0) {
             int lba = 0, sev = 0;
-            if (std::sscanf(ln.c_str(), "DEFECT %d %d", &lba, &sev) == 2 &&
-                cb_.onDiscScanCell)
-                cb_.onDiscScanCell(lba, sev >= 2 ? 2 : 1);
+            if (std::sscanf(ln.c_str(), "DEFECT %d %d", &lba, &sev) == 2) {
+                int st = sev >= 2 ? 2 : 1;
+                rip_defmap.push_back({ lba, st });   // volle Auflösung
+                if (cb_.onDiscScanCell) cb_.onDiscScanCell(lba, st);
+            }
         } else if (ln.rfind("RIPSTART ", 0) == 0) {
             int idx = std::atoi(ln.c_str() + 9);
             last_started = idx;
@@ -940,6 +945,18 @@ void Pipeline::process_disc(Drive& drv, const std::atomic<bool>& stop,
                       " an die Registry gemeldet.");
     }
 
+    // Schadensform aus dem sektorgenauen Rip-Defektmap rekonstruieren
+    // (Wisch/Schmutz vs. radialer Kratzer vs. tiefe Gouge) → Klartext-
+    // Diagnose + Handlungsempfehlung. Einmal berechnen, mehrfach genutzt
+    // (Log, Rip-Report, Zustands-Sidecar).
+    cdr::DamageReport dr = cdr::classify_damage(
+        rip_defmap, ar_offs.empty() ? 0 : ar_offs.front(),
+        ar_leadout, n);
+    if (dr.bad_sectors > 0 && cb_.onLog) {
+        cb_.onLog("Schadensbild: " + dr.headline);
+        if (!dr.advice.empty()) cb_.onLog("Empfehlung: " + dr.advice);
+    }
+
     // B1: EAC-Style Rip-Report neben das Album legen (best effort).
     if (!stop.load()) {
         try {
@@ -981,6 +998,12 @@ void Pipeline::process_disc(Drive& drv, const std::atomic<bool>& stop,
                     r << "  ·  " << it->second << " unlesbare Sektoren";
                 r << "\n";
             }
+            if (dr.bad_sectors > 0) {
+                r << "----------------------------------------\n"
+                  << "Schadensbild: " << dr.headline << "\n";
+                if (!dr.advice.empty())
+                    r << "Empfehlung  : " << dr.advice << "\n";
+            }
             fs::path rp = work / "rip-report.txt";
             { std::ofstream rf(rp); rf << r.str(); }
             auto up = make_uploader(cfg_);
@@ -1017,8 +1040,13 @@ void Pipeline::process_disc(Drive& drv, const std::atomic<bool>& stop,
                 bool ab = stop.load();
                 bool okk = (failed.load() == 0) && !ab;
                 cs << "\nAccurateRip: " << ar_ok << "/" << (int)ar_res.size()
-                   << "\nBeschädigte Tracks: " << dmgn
-                   << "\nErgebnis : "
+                   << "\nBeschädigte Tracks: " << dmgn;
+                if (dr.bad_sectors > 0) {
+                    cs << "\nSchadensbild: " << dr.headline;
+                    if (!dr.advice.empty())
+                        cs << "\nEmpfehlung : " << dr.advice;
+                }
+                cs << "\nErgebnis : "
                    << (ab ? "abgebrochen" : (okk ? "ok" : "fehler"))
                    << "\n";
                 fs::path cp = work / "disc-condition.txt";

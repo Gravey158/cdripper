@@ -481,6 +481,25 @@ ProbeResult probe_classify(const std::vector<ProbeRaw>& raw, int ntracks,
                            int disc_end, const std::vector<int>& hung,
                            int skips, RipResult rr);
 
+// ── Schadensform-Diagnose ──────────────────────────────────────────────────────
+// Aus dem SEKTORGENAUEN Defekt-LBA-Muster (Rip-Defektmap) die physische
+// Schadensform rekonstruieren — eine CD ist eine Spirale konstanten
+// Spurabstands, daher korreliert das LBA-Muster mit der Geometrie:
+//  • umlaufender Wisch/Schmutz  → ein zusammenhängender LBA-Block
+//  • radialer Kratzer           → viele winzige Cluster, ~1/Umdrehung
+//  • tiefe Pit-Beschädigung     → dichter kompakter Block, fast nur Verlust
+// Rein & deterministisch (unit-testbar, kein Laufwerk).
+struct DamageReport {
+    enum Kind { None, Scuff, Scratch, Gouge, Mixed };
+    Kind        kind = None;
+    int         bad_sectors = 0;       // Anzahl defekter Sektoren
+    int         clusters    = 0;       // zusammenhängende Schadenszonen
+    std::string headline;              // Klartext-Diagnose
+    std::string advice;                // Handlungsempfehlung
+};
+DamageReport classify_damage(const std::vector<ProbeSample>& defects,
+                             int lba_min, int lba_max, int ntracks);
+
 // ── Archiv / Zustands-Log (JSON neben der Config) ──────────────────────────────
 // Jeder Rip UND jeder Standalone-Scan = ein Eintrag (Verlauf, mehrfach pro
 // Disc erlaubt → Zustands-Entwicklung über Reinigung sichtbar).

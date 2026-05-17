@@ -1763,6 +1763,22 @@ void MainWindow::onScanDisc() {
                 h += "<br><span style='color:#e0a83e'>Scan unvollständig "
                      "(Laufwerk hing / abgebrochen) — Teil-Karte zeigt, "
                      "wo es hängt.</span>";
+            // Schadensform-Diagnose aus dem Stichproben-Muster (beim Scan
+            // grob — die volle Auflösung liefert der echte Rip).
+            cdr::DamageReport dmg = cdr::classify_damage(
+                r.map, r.lba_min, r.lba_max,
+                (int)r.track_status.size() - 1);
+            if (dmg.bad_sectors > 0) {
+                h += "<br><span style='color:#9aa0aa'>Schadensbild (grob): " +
+                     QString::fromStdString(dmg.headline) + "</span>";
+                if (pLog) {
+                    pLog->appendPlainText("Schadensbild: " +
+                        QString::fromStdString(dmg.headline));
+                    if (!dmg.advice.empty())
+                        pLog->appendPlainText("Empfehlung: " +
+                            QString::fromStdString(dmg.advice));
+                }
+            }
             if (pSc)   pSc->setResult(r);     // finale relative Einfärbung
             if (pHead) pHead->setText(h);
             if (pLog)  pLog->appendPlainText(
