@@ -106,8 +106,8 @@ int main(int argc, char** argv) {
             QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QComboBox,
             QAbstractSpinBox {
                 background:#262a31; color:#e8eaed;
-                border:1px solid #343b47; border-radius:8px;
-                padding:6px 9px; min-height:18px;
+                border:1px solid #343b47; border-radius:7px;
+                padding:4px 8px; min-height:16px;
                 selection-background-color:#2979ff;
                 selection-color:#ffffff; }
             QLineEdit:hover, QSpinBox:hover, QComboBox:hover,
@@ -125,11 +125,11 @@ int main(int argc, char** argv) {
 
             QGroupBox {
                 background:#262b33; border:0;
-                border-radius:14px; margin-top:18px;
-                padding:16px 16px 14px 16px; }
+                border-radius:12px; margin-top:13px;
+                padding:9px 12px 9px 12px; }
             QGroupBox::title {
                 subcontrol-origin:margin; subcontrol-position:top left;
-                left:6px; padding:0 2px; color:#7c8593;
+                left:4px; padding:0 2px; color:#7c8593;
                 font-size:8pt; font-weight:800; letter-spacing:2px; }
 
             QToolButton {
@@ -142,8 +142,8 @@ int main(int argc, char** argv) {
 
             QPushButton {
                 background:#2b313b; color:#e8eaed;
-                border:1px solid #3a414e; border-radius:8px;
-                padding:7px 16px; min-height:18px; font-weight:600; }
+                border:1px solid #3a414e; border-radius:7px;
+                padding:5px 14px; min-height:16px; font-weight:600; }
             QPushButton:hover   { background:#333b48; border-color:#475264; }
             QPushButton:pressed { background:#1f63d6; border-color:#1f63d6; }
             QPushButton:disabled{ color:#5b6675; background:#23272e;

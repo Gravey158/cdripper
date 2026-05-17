@@ -506,7 +506,7 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
     : QMainWindow(parent), cfg_(std::move(cfg)), once_(once),
       cfgPath_(std::move(cfgPath)) {
     setWindowTitle("CD-Ripper → Navidrome");
-    resize(960, 720);
+    resize(1040, 820);
 
     ctl_ = new Controller(this);
     // Scan-geführter Rip: nur ein frischer Session-Scan DERSELBEN Disc
@@ -552,8 +552,8 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
 
     auto* central = new QWidget;
     auto* root    = new QVBoxLayout(central);
-    root->setContentsMargins(16, 14, 16, 12);
-    root->setSpacing(12);
+    root->setContentsMargins(12, 8, 12, 10);
+    root->setSpacing(8);
 
     // ── Schlanke App-Leiste (Brand links, ☰-Menü rechts) ──────────────
     {
@@ -756,6 +756,7 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
     table_->setShowGrid(false);
     table_->setAlternatingRowColors(true);
     table_->setFrameShape(QFrame::NoFrame);
+    table_->setMinimumHeight(260);   // garantiert ~7 Zeilen, nie 1-Zeilen-Quetsch
     {
         auto* tCard = new QGroupBox("TITEL");
         auto* tl = new QVBoxLayout(tCard);
@@ -767,7 +768,7 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
     logView_ = new QPlainTextEdit;
     logView_->setReadOnly(true);
     logView_->setFrameShape(QFrame::NoFrame);
-    logView_->setMaximumHeight(130);
+    logView_->setMaximumHeight(92);
     {
         auto* lCard = new QGroupBox("PROTOKOLL");
         auto* ll = new QVBoxLayout(lCard);
