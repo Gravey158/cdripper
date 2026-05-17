@@ -23,6 +23,7 @@
 #include <QFormLayout>
 #include <QFrame>
 #include <QGroupBox>
+#include <QScrollArea>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -506,7 +507,8 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
     : QMainWindow(parent), cfg_(std::move(cfg)), once_(once),
       cfgPath_(std::move(cfgPath)) {
     setWindowTitle("CD-Ripper → Navidrome");
-    resize(1040, 820);
+    resize(1024, 680);                 // passt auf kurze Panels (z.B. 1920×720)
+    setMinimumSize(820, 460);          // darf klein werden — Inhalt scrollt
 
     ctl_ = new Controller(this);
     // Scan-geführter Rip: nur ein frischer Session-Scan DERSELBEN Disc
@@ -756,7 +758,7 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
     table_->setShowGrid(false);
     table_->setAlternatingRowColors(true);
     table_->setFrameShape(QFrame::NoFrame);
-    table_->setMinimumHeight(260);   // garantiert ~7 Zeilen, nie 1-Zeilen-Quetsch
+    table_->setMinimumHeight(110);   // ~3 Zeilen Minimum, skaliert mit Fenster
     {
         auto* tCard = new QGroupBox("TITEL");
         auto* tl = new QVBoxLayout(tCard);
@@ -777,7 +779,14 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
         root->addWidget(lCard);
     }
 
-    setCentralWidget(central);
+    // Alles in eine Scroll-Fläche → auf kurzen/kleinen Bildschirmen
+    // scrollt der Inhalt statt abgeschnitten zu werden (skalierbar).
+    auto* scroll = new QScrollArea;
+    scroll->setWidget(central);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    setCentralWidget(scroll);
 
     // Statusbar
     sbElapsed_ = new QLabel("Zeit 0:00");
