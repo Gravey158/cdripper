@@ -40,7 +40,12 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QProgressDialog>
+#include <QCloseEvent>
+#include <QGuiApplication>
+#include <QScreen>
+#include <QSettings>
 #include <algorithm>
+#include <sstream>
 #include <QFont>
 #include <QProgressBar>
 #include <QPushButton>
@@ -274,7 +279,9 @@ protected:
         const int W = width(), H = height();
         const QPointF c(W / 2.0, H / 2.0);
         const double R = std::min(W, H) / 2.0 - 8.0;
-        g.fillRect(rect(), QColor("#1e2127"));
+        // Hintergrund = Karten-Oberfläche (#262b33, identisch zum QGroupBox),
+        // damit das Widget im „DISC"-Kasten kein dunkleres Quadrat bildet.
+        g.fillRect(rect(), QColor("#262b33"));
         g.setPen(Qt::NoPen);
         g.setBrush(QColor("#2b2f37"));
         g.drawEllipse(c, R, R);
@@ -507,8 +514,31 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
     : QMainWindow(parent), cfg_(std::move(cfg)), once_(once),
       cfgPath_(std::move(cfgPath)) {
     setWindowTitle("CD-Ripper → Navidrome");
-    resize(1024, 680);                 // passt auf kurze Panels (z.B. 1920×720)
     setMinimumSize(820, 460);          // darf klein werden — Inhalt scrollt
+    // Fenstergröße über Programmstarts hinweg merken — neben der config.ini
+    // (persistenter /cfg-Mount; das Container-Home ist flüchtig). Erststart:
+    // großzügige Größe, die alle Karten ohne Scrollen zeigt, aber NIE größer
+    // als der Bildschirm (kleine Panels wie 1920×720 → passend gekappt,
+    // Rest scrollt). Danach exakt der zuletzt geschlossene Stand.
+    {
+        QSettings ui(QString::fromStdString(cdr::config_dir()) +
+                     "/gui-state.ini", QSettings::IniFormat);
+        QByteArray geo = ui.value("geometry").toByteArray();
+        if (!geo.isEmpty()) {
+            restoreGeometry(geo);
+        } else {
+            QSize want(1180, 880);     // zeigt alle Karten ohne Scrollen
+            if (auto* scr = QGuiApplication::primaryScreen()) {
+                QRect av = scr->availableGeometry();
+                want.setWidth (std::min(want.width(),  av.width()  - 40));
+                want.setHeight(std::min(want.height(), av.height() - 40));
+                resize(want);
+                move(av.center() - QPoint(want.width()/2, want.height()/2));
+            } else {
+                resize(want);
+            }
+        }
+    }
 
     ctl_ = new Controller(this);
     // Scan-geführter Rip: nur ein frischer Session-Scan DERSELBEN Disc
@@ -837,6 +867,15 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
     // Jukebox: nach dem Anzeigen automatisch starten (Default AUS via Config).
     if (cfg_.jukebox)
         QTimer::singleShot(400, this, &MainWindow::onStart);
+}
+
+void MainWindow::closeEvent(QCloseEvent* e) {
+    // Aktuelle Fenstergröße/-position persistieren (siehe Ctor: gleiche
+    // Datei neben der config.ini). Nächster Start nimmt exakt diesen Stand.
+    QSettings ui(QString::fromStdString(cdr::config_dir()) +
+                 "/gui-state.ini", QSettings::IniFormat);
+    ui.setValue("geometry", saveGeometry());
+    QMainWindow::closeEvent(e);
 }
 
 MainWindow::~MainWindow() {
@@ -1519,9 +1558,16 @@ void MainWindow::onScanDisc() {
         ae.kind = "scan"; ae.outcome = "scan";
         std::string relId;
         QStringList titles;
+        int leadout = 0;       // echtes Disc-Ende (LBA) — Ring-Radius fixieren
         try {
             cdr::DiscIdent di = cdr::read_disc_ident(dev);
             ae.disc_id = di.id; ae.tracks = di.toc_tracks;
+            // libdiscid-TOC = "first last leadout off1 off2 …": das 3. Token
+            // ist die Leadout-LBA = volle Disc-Geometrie. VOR dem Scan setzen,
+            // damit die Bänder nicht nachskalieren (Ziehharmonika) und der
+            // Cursor die echte Laser-Radialposition zeigt statt sofort außen.
+            { std::istringstream ts(di.toc); int a, b;
+              if (ts >> a >> b >> leadout && leadout < 0) leadout = 0; }
             try {
                 auto cands = cdr::mb_release_candidates(di.id, ua, di.toc);
                 if (!cands.empty()) {
@@ -1539,7 +1585,8 @@ void MainWindow::onScanDisc() {
                 (ae.artist.empty() && ae.title.empty())
                 ? std::string("(unbekannte Disc)")
                 : ae.artist + " — " + ae.title);
-            QMetaObject::invokeMethod(this, [pHead, pLog, t] {
+            QMetaObject::invokeMethod(this, [pSc, pHead, pLog, t, leadout] {
+                if (pSc && leadout > 0) pSc->beginScan(0, leadout);
                 if (pHead) pHead->setText("Scanne: <b>" + t + "</b> …");
                 if (pLog)  pLog->appendPlainText("Disc: " + t);
             }, Qt::QueuedConnection);

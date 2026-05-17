@@ -25,6 +25,7 @@ class QComboBox;
 class QSpinBox;
 class QStackedWidget;
 class QSystemTrayIcon;
+class QCloseEvent;
 
 // Wrappt cdr::Pipeline: marshalt alle Callbacks (die aus Worker-Threads kommen)
 // in Qt-Signals mit reinen Qt-Typen → cross-thread queued, kein qRegisterMetaType.
@@ -121,6 +122,7 @@ private slots:
 
 protected:
     bool eventFilter(QObject* obj, QEvent* ev) override;  // Cover-Easter-Egg
+    void closeEvent(QCloseEvent* e) override;              // Größe merken
 
 private:
     void setControlsRunning(bool r);
