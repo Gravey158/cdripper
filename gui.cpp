@@ -11,6 +11,7 @@
 #include <QComboBox>
 #include <QMenu>
 #include <QMenuBar>
+#include <QToolButton>
 #include <QDialogButtonBox>
 #include <cmath>
 
@@ -522,14 +523,15 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
         return {};
     };
 
-    // Menüleiste (Datei / Optionen / Ansicht / Hilfe)
-    auto* mDatei = menuBar()->addMenu("&Datei");
-    mDatei->addAction("Einstellungen…", QKeySequence("Ctrl+,"),
-                      this, &MainWindow::onOpenSettings);
+    // KEINE klassische Menüleiste (altbacken) — alle Aktionen unter
+    // einem ☰-Button in der schlanken App-Leiste.
+    auto* mDatei = new QMenu("Datei", this);
+    QAction* aSettings = mDatei->addAction("Einstellungen…",
+        QKeySequence("Ctrl+,"), this, &MainWindow::onOpenSettings);
     mDatei->addSeparator();
-    mDatei->addAction("Beenden", QKeySequence("Ctrl+Q"),
-                      this, &QWidget::close);
-    auto* mAktion = menuBar()->addMenu("&Aktion");
+    QAction* aQuit = mDatei->addAction("Beenden", QKeySequence("Ctrl+Q"),
+        this, &QWidget::close);
+    auto* mAktion = new QMenu("Aktion", this);
     mAktion->addAction("Start", this, &MainWindow::onStart);
     mAktion->addAction("Stop",  this, &MainWindow::onStop);
     mAktion->addAction("Disc-Qualität scannen…", this,
@@ -539,17 +541,42 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
                        &MainWindow::onSearchMeta);
     mAktion->addAction("Titel per Klang erkennen (AcoustID)…", this,
                        &MainWindow::onIdentifyAcoustID);
-    auto* mAnsicht = menuBar()->addMenu("&Ansicht");
+    auto* mAnsicht = new QMenu("Ansicht", this);
     mAnsicht->addAction("Logs anzeigen…", this, &MainWindow::onShowLogs);
     mAnsicht->addAction("Sitzungs-Verlauf…", this, &MainWindow::onShowHistory);
     mAnsicht->addAction("Archiv / Zustand…", this, &MainWindow::onShowArchive);
-    auto* mHilfe = menuBar()->addMenu("&Hilfe");
+    auto* mHilfe = new QMenu("Hilfe", this);
     mHilfe->addAction("Über CD Ripper…", this, &MainWindow::onAbout);
+    addAction(aSettings); addAction(aQuit);    // Shortcuts global aktiv
+    menuBar()->hide();
 
     auto* central = new QWidget;
     auto* root    = new QVBoxLayout(central);
-    root->setContentsMargins(14, 14, 14, 12);
+    root->setContentsMargins(16, 14, 16, 12);
     root->setSpacing(12);
+
+    // ── Schlanke App-Leiste (Brand links, ☰-Menü rechts) ──────────────
+    {
+        auto* appBar = new QWidget;
+        auto* abL = new QHBoxLayout(appBar);
+        abL->setContentsMargins(2, 0, 2, 2);
+        auto* brand = new QLabel(QString::fromUtf8(
+            "<span style='color:#2979ff;font-size:16pt;'>●</span>"
+            "&nbsp;&nbsp;<span style='font-size:15pt;font-weight:600;"
+            "letter-spacing:1px;color:#e8eaed;'>CD&nbsp;RIPPER</span>"));
+        abL->addWidget(brand);
+        abL->addStretch(1);
+        auto* menuBtn = new QToolButton;
+        menuBtn->setText(QString::fromUtf8("☰  Menü"));
+        menuBtn->setPopupMode(QToolButton::InstantPopup);
+        menuBtn->setCursor(Qt::PointingHandCursor);
+        auto* big = new QMenu(this);
+        big->addMenu(mDatei);  big->addMenu(mAktion);
+        big->addMenu(mAnsicht); big->addMenu(mHilfe);
+        menuBtn->setMenu(big);
+        abL->addWidget(menuBtn);
+        root->addWidget(appBar);
+    }
 
     // Kopf: Cover + editierbare Album-Felder
     auto* head = new QHBoxLayout;
@@ -618,7 +645,7 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
             [this](int lba){ discScan_->setCursor(lba); });
     connect(ctl_, &Controller::ripProgress, this,
             [this](double f){ discScan_->setRipProgress(f); });
-    auto* discCard = new QGroupBox("Disc");
+    auto* discCard = new QGroupBox("DISC");
     head->setContentsMargins(2, 2, 2, 2);
     discCard->setLayout(head);
     root->addWidget(discCard);
@@ -663,7 +690,7 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
     ctrl->addWidget(startBtn_);
     ctrl->addWidget(stopBtn_);
     startBtn_->setProperty("primary", true);     // Akzent-Button
-    auto* ctrlCard = new QGroupBox("Steuerung");
+    auto* ctrlCard = new QGroupBox("STEUERUNG");
     ctrl->setContentsMargins(2, 2, 2, 2);
     ctrlCard->setLayout(ctrl);
     root->addWidget(ctrlCard);
@@ -730,7 +757,7 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
     table_->setAlternatingRowColors(true);
     table_->setFrameShape(QFrame::NoFrame);
     {
-        auto* tCard = new QGroupBox("Titel");
+        auto* tCard = new QGroupBox("TITEL");
         auto* tl = new QVBoxLayout(tCard);
         tl->setContentsMargins(2, 2, 2, 2);
         tl->addWidget(table_);
@@ -742,7 +769,7 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
     logView_->setFrameShape(QFrame::NoFrame);
     logView_->setMaximumHeight(130);
     {
-        auto* lCard = new QGroupBox("Protokoll");
+        auto* lCard = new QGroupBox("PROTOKOLL");
         auto* ll = new QVBoxLayout(lCard);
         ll->setContentsMargins(2, 2, 2, 2);
         ll->addWidget(logView_);

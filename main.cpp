@@ -124,13 +124,21 @@ int main(int argc, char** argv) {
                 selection-color:#ffffff; }
 
             QGroupBox {
-                background:#23272e; border:1px solid #343b47;
-                border-radius:11px; margin-top:14px;
-                padding:14px 12px 12px 12px; }
+                background:#262b33; border:0;
+                border-radius:14px; margin-top:18px;
+                padding:16px 16px 14px 16px; }
             QGroupBox::title {
                 subcontrol-origin:margin; subcontrol-position:top left;
-                left:14px; padding:2px 8px; color:#9aa0aa;
-                font-weight:bold; }
+                left:6px; padding:0 2px; color:#7c8593;
+                font-size:8pt; font-weight:800; letter-spacing:2px; }
+
+            QToolButton {
+                background:#2b313b; color:#e8eaed;
+                border:1px solid #3a414e; border-radius:8px;
+                padding:7px 14px; font-weight:600; }
+            QToolButton:hover  { background:#333b48; border-color:#475264; }
+            QToolButton:pressed{ background:#1f63d6; border-color:#1f63d6; }
+            QToolButton::menu-indicator { image:none; width:0; height:0; }
 
             QPushButton {
                 background:#2b313b; color:#e8eaed;
