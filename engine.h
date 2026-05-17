@@ -15,6 +15,12 @@ namespace fs = std::filesystem;
 
 namespace cdr {
 
+// Versionsschema MAJOR.MINOR.PATCH:
+//   MAJOR  großer Meilenstein
+//   MINOR  mittleres Feature / größerer Bugfix
+//   PATCH  kleiner Bugfix / kleine Änderung
+// Bei jeder veröffentlichten Änderung hier hochzählen und im lokalen
+// Git-Repo einen passenden Tag setzen (git tag -a vX.Y.Z).
 constexpr const char* VERSION = "1.0.0";
 
 struct Config {
