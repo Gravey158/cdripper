@@ -1842,6 +1842,17 @@ HwInfo drive_hwinfo(const std::string& device) {
     return h;
 }
 
+std::vector<std::string> list_optical_devices() {
+    std::vector<std::string> v;
+    char** d = cdio_get_devices(DRIVER_DEVICE);
+    if (d) {
+        for (int i = 0; d[i]; ++i)
+            if (d[i][0]) v.push_back(d[i]);
+        cdio_free_device_list(d);
+    }
+    return v;
+}
+
 std::string drive_id(const std::string& device) {
     HwInfo h = drive_hwinfo(device);
     std::string id = h.ok ? trim(h.vendor + " " + h.model) : "unknown-drive";

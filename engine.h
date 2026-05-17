@@ -21,7 +21,7 @@ namespace cdr {
 //   PATCH  kleiner Bugfix / kleine Änderung
 // Bei jeder veröffentlichten Änderung hier hochzählen und im lokalen
 // Git-Repo einen passenden Tag setzen (git tag -a vX.Y.Z).
-constexpr const char* VERSION = "1.0.1";
+constexpr const char* VERSION = "1.1.0";
 
 struct Config {
     std::string device        = "/dev/sr0";
@@ -284,6 +284,10 @@ bool save_drive_offset(const std::string& drive_id, int offset);
 bool delete_drive_offset(const std::string& drive_id);
 struct DriveOffset { std::string id; int offset; };
 std::vector<DriveOffset> list_drive_offsets();
+
+// Im System erkannte optische Laufwerke (Gerätepfade, z.B. /dev/sr0).
+// Leer = keins gefunden (dann Fallback auf konfiguriertes Gerät).
+std::vector<std::string> list_optical_devices();
 
 // ── Offset-Registry-Client (T5) ────────────────────────────────────────────────
 // Cluster-App (or1-9c4k.x2-pandora.de). Alles best-effort, nie werfend; bei

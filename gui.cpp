@@ -662,9 +662,25 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
     // Steuerleiste
     auto* ctrl = new QHBoxLayout;
     ctrl->addWidget(new QLabel("Laufwerk:"));
-    device_ = new QLineEdit(QString::fromStdString(cfg_.device));
-    device_->setMaximumWidth(140);
+    device_ = new QComboBox;
+    device_->setMinimumWidth(260);
+    device_->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    device_->setToolTip("Im System erkannte optische Laufwerke "
+                        "(● = CD eingelegt, ○ = leer)");
     ctrl->addWidget(device_);
+    auto* refreshDrv = new QToolButton;
+    refreshDrv->setText("⟳");
+    refreshDrv->setToolTip("Laufwerke neu einlesen");
+    refreshDrv->setCursor(Qt::PointingHandCursor);
+    connect(refreshDrv, &QToolButton::clicked, this,
+            &MainWindow::populateDrives);
+    ctrl->addWidget(refreshDrv);
+    populateDrives();
+    connect(device_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int){
+                QString d = device_->currentData().toString();
+                if (!d.isEmpty()) cfg_.device = d.toStdString();
+            });
     dryRun_  = new QCheckBox("Dry-Run (kein Upload)");
     dryRun_->setChecked(cfg_.dry_run);
     onceBox_ = new QCheckBox("Nur eine CD");
@@ -844,7 +860,8 @@ void MainWindow::setControlsRunning(bool r) {
 
 void MainWindow::onStart() {
     if (ctl_->running()) return;
-    cfg_.device  = device_->text().toStdString();
+    { QString d = device_->currentData().toString();
+      if (!d.isEmpty()) cfg_.device = d.toStdString(); }
     cfg_.dry_run = dryRun_->isChecked();
     if (cfg_.webdav_pass.empty() && !cfg_.dry_run) {
         QMessageBox::warning(this, "Kein Passwort",
@@ -1154,6 +1171,39 @@ void MainWindow::tick() {
     discWatch();
 }
 
+// Laufwerks-Dropdown: im System erkannte optische Laufwerke + Hardware-
+// Name + ob eine CD drin ist (● / ○). Passive Statusabfrage (kein Probe
+// → kein Anlaufen). Fällt auf das konfigurierte Gerät zurück.
+void MainWindow::populateDrives() {
+    QString keep = device_->count()
+        ? device_->currentData().toString()
+        : QString::fromStdString(cfg_.device);
+    QSignalBlocker blk(device_);
+    device_->clear();
+    auto devs = cdr::list_optical_devices();
+    if (devs.empty()) devs.push_back(cfg_.device);   // Fallback
+    for (const auto& d : devs) {
+        QString label = QString::fromStdString(d);
+        cdr::HwInfo hw = cdr::drive_hwinfo(d);
+        if (hw.ok) {
+            QString m = QString::fromStdString(
+                (hw.vendor + " " + hw.model)).trimmed();
+            if (!m.isEmpty()) label += "  ·  " + m;
+        }
+        bool disc = false;
+        try { cdr::Drive dr(d); disc = dr.disc_ready(); } catch (...) {}
+        label += disc ? QString::fromUtf8("   ● CD")
+                       : QString::fromUtf8("   ○ leer");
+        device_->addItem(label, QString::fromStdString(d));
+        device_->setItemData(device_->count() - 1,
+                             QString::fromStdString(d), Qt::ToolTipRole);
+    }
+    int idx = device_->findData(keep);
+    device_->setCurrentIndex(idx >= 0 ? idx : 0);
+    QString sel = device_->currentData().toString();
+    if (!sel.isEmpty()) cfg_.device = sel.toStdString();
+}
+
 // Vorschau beim Einlegen: erkennt eine neu eingelegte Audio-CD (nur wenn
 // kein Rip läuft), holt Metadaten + Cover + Trackliste off-thread und
 // zeigt sie sofort. Danach entscheidet das Jukebox-Setting (an → Rip
@@ -1329,7 +1379,7 @@ void MainWindow::onOpenSettings() {
     SettingsDialog dlg(cfg_, QString::fromStdString(cfgPath_), this);
     if (dlg.exec() != QDialog::Accepted) return;
     cfg_ = dlg.config();
-    device_->setText(QString::fromStdString(cfg_.device));
+    populateDrives();          // ggf. in den Einstellungen geändertes Gerät
     QString prof = dlg.selectedProfile();
     std::string path = cdr::profile_path(prof.toStdString());
     if (cdr::save_config(cfg_, path)) {
@@ -1399,7 +1449,8 @@ void MainWindow::onScanDisc() {
     if (scanThr_.joinable()) scanThr_.join();
     scanBusy_ = true;     // discWatch pausieren (sonst Drive-Poll-Kollision
                           // → GUI-Freeze, Live-Karte erst am Ende)
-    cfg_.device = device_->text().toStdString();
+    { QString d = device_->currentData().toString();
+      if (!d.isEmpty()) cfg_.device = d.toStdString(); }
     auto stopF = std::make_shared<std::atomic<bool>>(false);
     scanStop_ = stopF;    // dtor kann den Scan so abbrechen
 

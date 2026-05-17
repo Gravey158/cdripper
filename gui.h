@@ -126,6 +126,7 @@ private:
     void setControlsRunning(bool r);
     void appendLog(const QString& line);         // farbig ins Log-Fenster
     void logChain(const QString& line);          // Log-Fenster + cdripper.log
+    void populateDrives();                       // Laufwerks-Dropdown füllen
     void discWatch();                            // Vorschau beim Einlegen
     void resetDiscState();                       // Auswurf → letzten Stand leeren
     bool hadDisc_ = false;                        // Disc-präsent-Flanke (Auswurf)
@@ -149,7 +150,7 @@ private:
     QLabel* discScanCap_ = nullptr;              // Status unter der Disc
     QWidget* coverSpin_ = nullptr;               // Cover-Easter-Egg (Overlay)
 
-    QLineEdit*  device_;
+    QComboBox*  device_;                         // erkannte Laufwerke
     QCheckBox*  dryRun_;
     QCheckBox*  onceBox_;
     QPushButton* startBtn_;

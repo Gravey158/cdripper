@@ -194,6 +194,9 @@ int main(int argc, char** argv) {
             QProgressBar::chunk {
                 background:#2979ff; border-radius:7px; }
 
+            QScrollArea { background:#1e2127; border:0; }
+            QScrollArea > QWidget > QWidget { background:#1e2127; }
+            QAbstractScrollArea { background:#1e2127; }
             QStatusBar { background:#1a1d22; color:#9aa0aa; }
             QStatusBar::item { border:0; }
             QToolTip {
