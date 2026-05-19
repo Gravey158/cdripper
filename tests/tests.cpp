@@ -364,6 +364,26 @@ int main() {
         DamageReport fw = classify_damage(few, 0, 300000, 15);
         CHECK_EQ(fw.kind, DamageReport::Mixed, "dmg verstreut → Mixed");
         CHECK_EQ(fw.bad_sectors, 3, "dmg verstreut 3 Sektoren");
+
+        // Hänger-Diagnose: leere Karte + Tracks hängten Laufwerk → DriveHang
+        // (NICHT "sauberer Rip"). Inner-Circle-Fall.
+        DamageReport h0 = classify_damage({}, 0, 300000, 18, 4);
+        CHECK_EQ(h0.kind, DamageReport::DriveHang, "dmg leer+hung → DriveHang");
+        // Dünne verstreute Punkte + Hänger → DriveHang statt "kein Muster"
+        // (genau der reale Inner-Circle-Befund: 4 Sektoren, 4 Hänger).
+        std::vector<ProbeSample> ic = { {120000,2},{160000,2},
+                                        {200000,2},{240000,2} };
+        DamageReport hr = classify_damage(ic, 0, 300000, 18, 4);
+        CHECK_EQ(hr.kind, DamageReport::DriveHang,
+                 "dmg dünn+hung → DriveHang (kein 'kein Muster')");
+        // Hänger ohne Defekte UND ohne hung → weiterhin None (sauber).
+        DamageReport hn = classify_damage({}, 0, 300000, 18, 0);
+        CHECK_EQ(hn.kind, DamageReport::None, "dmg leer+0 hung → None");
+        // Echtes Muster bleibt erhalten, auch wenn Tracks hingen
+        // (Override greift nur beim schwachen Mixed).
+        DamageReport hs = classify_damage(scuff, 0, 300000, 15, 2);
+        CHECK_EQ(hs.kind, DamageReport::Scuff,
+                 "dmg Scuff+hung → bleibt Scuff (Override nur bei Mixed)");
     }
 
     std::printf("\n%d OK, %d FAIL\n", g_ok, g_fail);

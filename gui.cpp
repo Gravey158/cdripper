@@ -238,9 +238,8 @@ static QColor state_color(int s) {
 // als auch live (Hauptfenster während des Rips) genutzt.
 class DiscScanWidget : public QWidget {
 public:
-    // Drei Darstellungsvarianten — zum Vergleichen im Scan-Dialog.
-    // Default Ringe → Hauptfenster-Verhalten unverändert (nur schärfer).
-    enum class Mode { Rings, Spiral, Bar };
+    // Darstellung: scharfe Pixel-Ringe (Spiral/Bar-Vergleichsvarianten
+    // 2026-05-19 nach Dennis' Test entfernt — Ringe sind das Finale).
     explicit DiscScanWidget(QWidget* p = nullptr) : QWidget(p) {
         setMinimumSize(110, 110);   // Hauptfenster: kompakt fix (s.u.);
         auto* pt = new QTimer(this);            // sanftes Pulsieren
@@ -248,7 +247,6 @@ public:
             pulse_ += 0.09; update(); });
         pt->start(60);
     }                               // Scan-Dialog: flexibel größer
-    void setMode(Mode m) { mode_ = m; update(); }
     void setResult(const cdr::ProbeResult& r) {
         r_ = r; cur_ = -1; ripFrac_ = -1.0; update();
     }
@@ -282,11 +280,7 @@ protected:
         // Hintergrund = Karten-Oberfläche (#262b33, identisch zum QGroupBox),
         // damit das Widget im „DISC"-Kasten kein dunkleres Quadrat bildet.
         g.fillRect(rect(), QColor("#262b33"));
-        switch (mode_) {
-            case Mode::Spiral: paintSpiral(g); break;
-            case Mode::Bar:    paintBar(g);    break;
-            default:           paintRings(g);  break;
-        }
+        paintRings(g);
     }
 private:
     static QColor stcol(int s) {                  // -2 in Arbeit · 0/1/2
@@ -391,118 +385,9 @@ private:
         g.drawEllipse(c, R - 1.5, R - 1.5);
     }
 
-    // ── Variante B: Spiral-Heatmap (LBA → Winkel, echtes Lesemuster) ──────
-    void paintSpiral(QPainter& g) {
-        const int W = width(), H = height();
-        const QPointF c(W / 2.0, H / 2.0);
-        const double R = std::min(W, H) / 2.0 - 8.0;
-        const double ro = R * 0.99, ri = R * 0.16;
-        g.setRenderHint(QPainter::Antialiasing, true);
-        g.setPen(Qt::NoPen);
-        g.setBrush(QColor("#23272e"));
-        g.drawEllipse(c, R, R);
-        double turns = (ro - ri) / 4.0;               // ~4px Ganghöhe
-        if (turns < 8) turns = 8; if (turns > 44) turns = 44;
-        double pitch = (ro - ri) / turns;
-        const int STEPS = 2200;
-        double curFrac = -1.0;
-        std::vector<int> b = (r_.lba_max > r_.lba_min)
-            ? bucketize(STEPS, &curFrac) : std::vector<int>(STEPS, -1);
-        const double TAU = 6.28318530717958647692;
-        auto pt = [&](double t){
-            double ang = -TAU / 4.0 + t * turns * TAU;
-            double rr  = ri + t * (ro - ri);
-            return QPointF(c.x() + rr * std::cos(ang),
-                           c.y() + rr * std::sin(ang));
-        };
-        QPointF prev = pt(0.0);
-        for (int i = 1; i < STEPS; ++i) {
-            double t = (double)i / (STEPS - 1);
-            QPointF cur = pt(t);
-            int st = b[i];
-            QColor cc = st == -1 ? QColor("#2b2f37") : stcol(st);
-            g.setPen(QPen(cc, pitch + 0.7, Qt::SolidLine,
-                          Qt::FlatCap, Qt::RoundJoin));
-            g.drawLine(prev, cur);
-            prev = cur;
-        }
-        if (curFrac >= 0.0) {                          // Cursor = Punkt
-            QPointF p = pt(curFrac);
-            g.setPen(Qt::NoPen);
-            g.setBrush(QColor("#4fc3f7"));
-            g.drawEllipse(p, 4.0, 4.0);
-        }
-        g.setPen(Qt::NoPen);
-        g.setBrush(QColor("#1e2127"));
-        g.drawEllipse(c, ri * 0.6, ri * 0.6);
-        g.setBrush(Qt::NoBrush);
-        g.setPen(QColor("#3a3f4b"));
-        g.drawEllipse(c, R, R);
-        double s = 0.5 + 0.5 * std::sin(pulse_);
-        QColor glow(0x4f, 0xc3, 0xf7, (int)(28 + 46 * s));
-        g.setPen(QPen(glow, 2.0 + 1.5 * s));
-        g.drawEllipse(c, R - 1.5, R - 1.5);
-    }
-
-    // ── Variante C: lineare Qualitätsleiste (Anfang → Ende) ──────────────
-    void paintBar(QPainter& g) {
-        const int W = width(), H = height();
-        int mx = 24;
-        int bh = std::min(std::max((int)(H * 0.34), 30), 130);
-        int x0 = mx, x1 = W - mx;
-        int bw = std::max(8, x1 - x0);
-        int y0 = (H - bh) / 2 - 12;
-        QRectF bar(x0, y0, bw, bh);
-        g.setRenderHint(QPainter::Antialiasing, true);
-        QPainterPath rp; rp.addRoundedRect(bar, 9, 9);
-        g.fillPath(rp, QColor("#21262e"));
-        g.save();
-        g.setClipPath(rp);
-        g.setRenderHint(QPainter::Antialiasing, false);
-        double curFrac = -1.0;
-        std::vector<int> b = (r_.lba_max > r_.lba_min)
-            ? bucketize(bw, &curFrac) : std::vector<int>(bw, -1);
-        for (int x = 0; x < bw; ++x) {
-            if (b[x] == -1) continue;                  // Rohling = bg
-            g.fillRect(QRectF(x0 + x, y0, 1.0, bh), stcol(b[x]));
-        }
-        if (ripFrac_ >= 0.0)
-            g.fillRect(QRectF(x0, y0, bw * ripFrac_, bh),
-                       QColor(0x29, 0x79, 0xff, 150));
-        if (curFrac >= 0.0) {                          // Cursor = Strich
-            g.setPen(QPen(QColor("#4fc3f7"), 2));
-            double cx = x0 + curFrac * bw;
-            g.drawLine(QPointF(cx, y0), QPointF(cx, y0 + bh));
-        }
-        g.restore();
-        g.setRenderHint(QPainter::Antialiasing, true);
-        g.setBrush(Qt::NoBrush);
-        g.setPen(QColor("#343b47"));
-        g.drawPath(rp);
-        // Grobe Skala: 10 Teilstriche + Anfang/Ende-Beschriftung (echte
-        // Track-LBAs liegen nicht im ProbeResult → bewusst keine Nummern).
-        g.setPen(QColor("#4a525f"));
-        for (int k = 1; k < 10; ++k) {
-            double tx = x0 + bw * k / 10.0;
-            g.drawLine(QPointF(tx, y0 + bh + 3),
-                       QPointF(tx, y0 + bh + 8));
-        }
-        g.setPen(QColor("#9aa0aa"));
-        QFont f = g.font(); f.setPointSize(8); g.setFont(f);
-        g.drawText(QRectF(x0, y0 + bh + 9, bw, 16),
-                   Qt::AlignLeft,  "Anfang");
-        g.drawText(QRectF(x0, y0 + bh + 9, bw, 16),
-                   Qt::AlignRight, "Ende");
-        double s = 0.5 + 0.5 * std::sin(pulse_);
-        QColor glow(0x4f, 0xc3, 0xf7, (int)(22 + 40 * s));
-        g.setPen(QPen(glow, 1.5 + 1.0 * s));
-        g.drawPath(rp);
-    }
-
     int cur_ = -1;                               // Live-Scan-Cursor (LBA)
     double ripFrac_ = -1.0;                      // Rip-Fortschritt 0..1 (-1=aus)
     double pulse_ = 0.0;                          // Pulsier-Phase
-    Mode   mode_ = Mode::Rings;                    // Default = Hauptfenster
     cdr::ProbeResult r_;
 };
 
@@ -1603,33 +1488,11 @@ void MainWindow::onScanDisc() {
     v->addWidget(head);
     auto* sc = new DiscScanWidget(dlg);
     v->addWidget(sc, 1);
-    // Darstellungs-Umschalter (zum Vergleichen der drei Varianten).
-    auto* modeRow = new QHBoxLayout;
-    modeRow->addWidget(new QLabel("Darstellung:"));
-    auto* modeBox = new QComboBox(dlg);
-    modeBox->addItems({ "Ringe (scharf)", "Spirale (Heatmap)",
-                        "Lineare Leiste" });
-    modeRow->addWidget(modeBox);
-    modeRow->addStretch(1);
-    v->addLayout(modeRow);
-    auto* legend = new QLabel(QString::fromUtf8(
+    v->addWidget(new QLabel(QString::fromUtf8(
         "<small>Außen = Disc-Rand, innen = Anfang. "
         "<span style='color:#27ae60'>■</span> ok &nbsp; "
         "<span style='color:#e0a83e'>■</span> langsam &nbsp; "
-        "<span style='color:#c0392b'>■</span> Lesefehler</small>"));
-    v->addWidget(legend);
-    connect(modeBox, &QComboBox::currentIndexChanged,
-            dlg, [sc, legend](int i) {
-        sc->setMode(i == 1 ? DiscScanWidget::Mode::Spiral
-                  : i == 2 ? DiscScanWidget::Mode::Bar
-                           : DiscScanWidget::Mode::Rings);
-        QString pos = i == 2 ? "Links = Anfang, rechts = Ende. "
-                             : "Außen = Disc-Rand, innen = Anfang. ";
-        legend->setText("<small>" + pos +
-            "<span style='color:#27ae60'>■</span> ok &nbsp; "
-            "<span style='color:#e0a83e'>■</span> langsam &nbsp; "
-            "<span style='color:#c0392b'>■</span> Lesefehler</small>");
-    });
+        "<span style='color:#c0392b'>■</span> Lesefehler</small>")));
     auto* trk = new QTableWidget(0, 4, dlg);
     trk->setHorizontalHeaderLabels(
         { "Track", "Titel", "Rip-Verdikt", "Empf. Lese-Speed" });
@@ -1768,7 +1631,7 @@ void MainWindow::onScanDisc() {
             cdr::DamageReport dmg = cdr::classify_damage(
                 r.map, r.lba_min, r.lba_max,
                 (int)r.track_status.size() - 1);
-            if (dmg.bad_sectors > 0) {
+            if (dmg.kind != cdr::DamageReport::None) {
                 h += "<br><span style='color:#9aa0aa'>Schadensbild (grob): " +
                      QString::fromStdString(dmg.headline) + "</span>";
                 if (pLog) {

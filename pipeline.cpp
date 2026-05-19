@@ -14,6 +14,32 @@
 
 namespace cdr {
 
+// Track gilt als „schon am Ziel", wenn die Datei unter IRGENDEINEM
+// Disc-Präfix existiert (kein Präfix ODER „k-"). Grund: die MB-Release-/
+// Medium-Auswahl ist bei derselben Disc nicht garantiert stabil — ein
+// Re-Rip derselben Disc darf NICHT wegen wechselndem Präfix einen
+// kompletten Zwilling erzeugen (Root-Cause des Bravo-Hits-6-Duplikats:
+// Rip 1 ohne Präfix „01 - …", Rip 2 als „Disc 2" → „2-01 - …",
+// Pre-Exist-Check sah andere Dateinamen → alles neu gerippt). Echtes
+// Box-Set bleibt korrekt: Disc-2-Tracks haben ANDERE Titel als Disc-1,
+// kollidieren also nicht mit den Disc-1-Dateinamen.
+static bool track_present_any_disc(Uploader& up,
+        const std::vector<std::string>& base, int tnum,
+        const std::string& san_title, const std::string& ext,
+        int max_disc) {
+    std::string body = std::string(tnum < 10 ? "0" : "") +
+                       std::to_string(tnum) + " - " + san_title + "." + ext;
+    int mx = max_disc < 2 ? 2 : (max_disc > 9 ? 9 : max_disc);
+    std::vector<std::string> prefixes = { std::string() };
+    for (int k = 1; k <= mx; ++k)
+        prefixes.push_back(std::to_string(k) + "-");
+    for (const auto& p : prefixes) {
+        auto segs = base; segs.push_back(p + body);
+        if (up.exists(segs)) return true;
+    }
+    return false;
+}
+
 const char* state_label(TrackState s) {
     switch (s) {
         case TrackState::Pending:   return "wartet";
@@ -489,7 +515,10 @@ void Pipeline::process_disc(Drive& drv, const std::atomic<bool>& stop,
                     if (cb_.onLog) cb_.onLog("[dry] " + fn);
                 } else {
                     auto segs = dir_segs; segs.push_back(fn);
-                    if (!cfg_.overwrite_existing && dav->exists(segs)) {
+                    if (!cfg_.overwrite_existing &&
+                        track_present_any_disc(*dav, dir_segs, tr.number,
+                            sanitize(tr.title), ext,
+                            std::max(al.disc_total, al.disc_number))) {
                         // T4: Track existiert schon am Ziel → überspringen,
                         // fehlende Tracks (Box-Set/Resume) kommen trotzdem.
                         if (cb_.onLog)
@@ -788,14 +817,12 @@ void Pipeline::process_disc(Drive& drv, const std::atomic<bool>& stop,
                 std::string ex = audio_ext(cfg_);
                 for (int t = 1; t <= (int)snap.tracks.size(); ++t) {
                     const Track& tr = snap.tracks[t - 1];
-                    std::string pfx = (snap.disc_total > 1)
-                        ? (std::to_string(snap.disc_number) + "-")
-                        : std::string();
-                    std::string fn = pfx + (tr.number < 10 ? "0" : "") +
-                        std::to_string(tr.number) + " - " +
-                        sanitize(tr.title) + "." + ex;
-                    auto segs = base; segs.push_back(fn);
-                    if (up->exists(segs)) {
+                    // Präfix-tolerant: derselbe Track unter beliebigem
+                    // Disc-Präfix vorhanden → schon am Ziel (kein Re-Rip-
+                    // Zwilling bei wechselnder Medium-Auswahl).
+                    if (track_present_any_disc(*up, base, tr.number,
+                            sanitize(tr.title), ex,
+                            std::max(snap.disc_total, snap.disc_number))) {
                         pc[t] = 's';
                         preexist.push_back(t);
                     }
@@ -951,8 +978,8 @@ void Pipeline::process_disc(Drive& drv, const std::atomic<bool>& stop,
     // (Log, Rip-Report, Zustands-Sidecar).
     cdr::DamageReport dr = cdr::classify_damage(
         rip_defmap, ar_offs.empty() ? 0 : ar_offs.front(),
-        ar_leadout, n);
-    if (dr.bad_sectors > 0 && cb_.onLog) {
+        ar_leadout, n, (int)rip_failed.size());
+    if (dr.kind != cdr::DamageReport::None && cb_.onLog) {
         cb_.onLog("Schadensbild: " + dr.headline);
         if (!dr.advice.empty()) cb_.onLog("Empfehlung: " + dr.advice);
     }
@@ -998,7 +1025,7 @@ void Pipeline::process_disc(Drive& drv, const std::atomic<bool>& stop,
                     r << "  ·  " << it->second << " unlesbare Sektoren";
                 r << "\n";
             }
-            if (dr.bad_sectors > 0) {
+            if (dr.kind != cdr::DamageReport::None) {
                 r << "----------------------------------------\n"
                   << "Schadensbild: " << dr.headline << "\n";
                 if (!dr.advice.empty())
@@ -1041,7 +1068,7 @@ void Pipeline::process_disc(Drive& drv, const std::atomic<bool>& stop,
                 bool okk = (failed.load() == 0) && !ab;
                 cs << "\nAccurateRip: " << ar_ok << "/" << (int)ar_res.size()
                    << "\nBeschädigte Tracks: " << dmgn;
-                if (dr.bad_sectors > 0) {
+                if (dr.kind != cdr::DamageReport::None) {
                     cs << "\nSchadensbild: " << dr.headline;
                     if (!dr.advice.empty())
                         cs << "\nEmpfehlung : " << dr.advice;

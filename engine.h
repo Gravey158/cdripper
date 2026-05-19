@@ -21,7 +21,7 @@ namespace cdr {
 //   PATCH  kleiner Bugfix / kleine Änderung
 // Bei jeder veröffentlichten Änderung hier hochzählen und im lokalen
 // Git-Repo einen passenden Tag setzen (git tag -a vX.Y.Z).
-constexpr const char* VERSION = "1.2.0";
+constexpr const char* VERSION = "1.3.0";
 
 struct Config {
     std::string device        = "/dev/sr0";
@@ -490,15 +490,22 @@ ProbeResult probe_classify(const std::vector<ProbeRaw>& raw, int ntracks,
 //  • tiefe Pit-Beschädigung     → dichter kompakter Block, fast nur Verlust
 // Rein & deterministisch (unit-testbar, kein Laufwerk).
 struct DamageReport {
-    enum Kind { None, Scuff, Scratch, Gouge, Mixed };
+    // DriveHang = Laufwerk hat sich an Tracks hart aufgehängt (D-State),
+    // bevor Paranoia die Schäden kartieren konnte → Karte ist leer/dünn,
+    // das ist Laufwerks-Physik, kein per-Defektmuster diagnostizierbar.
+    enum Kind { None, Scuff, Scratch, Gouge, Mixed, DriveHang };
     Kind        kind = None;
     int         bad_sectors = 0;       // Anzahl defekter Sektoren
     int         clusters    = 0;       // zusammenhängende Schadenszonen
     std::string headline;              // Klartext-Diagnose
     std::string advice;                // Handlungsempfehlung
 };
+// hung_tracks = Anzahl Tracks, die das Laufwerk hängen ließen / fehlschlugen
+// (Rip-Pfad: rip_failed.size(); Scan-Pfad: 0). Bei Hängern ohne kartierbares
+// Muster → DriveHang statt irreführendem „verstreute Einzelfehler".
 DamageReport classify_damage(const std::vector<ProbeSample>& defects,
-                             int lba_min, int lba_max, int ntracks);
+                             int lba_min, int lba_max, int ntracks,
+                             int hung_tracks = 0);
 
 // ── Archiv / Zustands-Log (JSON neben der Config) ──────────────────────────────
 // Jeder Rip UND jeder Standalone-Scan = ein Eintrag (Verlauf, mehrfach pro

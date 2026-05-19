@@ -555,14 +555,30 @@ ProbeResult probe_classify(const std::vector<ProbeRaw>& raw, int ntracks,
 }
 
 DamageReport classify_damage(const std::vector<ProbeSample>& defects,
-                             int lba_min, int lba_max, int ntracks) {
+                             int lba_min, int lba_max, int ntracks,
+                             int hung_tracks) {
     DamageReport d;
     // Defekte einsammeln, je LBA der schlimmste Status, sortiert.
     std::map<int,int> bad;
     for (auto& s : defects)
         if (s.status >= 1) { int& v = bad[s.lba]; if (s.status > v) v = s.status; }
     d.bad_sectors = (int)bad.size();
+    // Laufwerk-Hänger: Paranoia kam nicht zum Kartieren (D-State vor dem
+    // ersten Lesefehler) → leere/dünne Karte trotz kaputter Tracks. Das ist
+    // KEIN Defektmuster, sondern Laufwerks-Physik → ehrliche Diagnose.
+    auto drive_hang = [&]() {
+        d.kind = DamageReport::DriveHang;
+        d.headline = std::to_string(hung_tracks) +
+            " Track(s) ließen das Laufwerk hart hängen (D-State)" +
+            (d.bad_sectors ? " — nur " + std::to_string(d.bad_sectors) +
+                             " Sektoren erfassbar, kein Muster"
+                           : " — Defektkarte nicht erfassbar") + ".";
+        d.advice = "Laufwerks-Physik, kein reiner Dreck: dieses Laufwerk "
+                   "kommt durch diese Stellen nicht. Disc reinigen — bleibt "
+                   "es, anderes Laufwerk (Pioneer/PureRead) nötig.";
+    };
     if (bad.empty()) {
+        if (hung_tracks > 0) { drive_hang(); return d; }
         d.kind = DamageReport::None;
         d.headline = "Keine defekten Sektoren erfasst — sauberer Rip.";
         return d;
@@ -649,6 +665,10 @@ DamageReport classify_damage(const std::vector<ProbeSample>& defects,
         d.headline = base + "verstreute Einzelfehler, kein klares Muster.";
         d.advice = "Reinigen und neu rippen; bei Bestand anderes Laufwerk.";
     }
+    // Kein erkennbares Muster + Tracks haben das Laufwerk gehängt → die
+    // Karte ist nur deshalb dünn, weil das Laufwerk wedgte (nicht weil der
+    // Schaden klein ist). Ehrliche Hänger-Diagnose statt „kein Muster".
+    if (hung_tracks > 0 && d.kind == DamageReport::Mixed) drive_hang();
     return d;
 }
 
