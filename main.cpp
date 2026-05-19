@@ -211,6 +211,8 @@ int main(int argc, char** argv) {
             QScrollArea { background:#1e2127; border:0; }
             QScrollArea > QWidget > QWidget { background:#1e2127; }
             QAbstractScrollArea { background:#1e2127; }
+            QWidget#multiWin { background:#1e2127; }
+            QWidget#drivePanel { background:#262b33; border-radius:12px; }
             QStatusBar { background:#1a1d22; color:#9aa0aa; }
             QStatusBar::item { border:0; }
             QToolTip {

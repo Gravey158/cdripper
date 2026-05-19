@@ -501,17 +501,28 @@ class DrivePanel : public QWidget {
 public:
     DrivePanel(const cdr::Config& base, const std::string& dev,
                QWidget* parent = nullptr)
-        : QWidget(parent), cfg_(base) {
+        : QWidget(parent), cfg_(base), dev_(dev) {
         cfg_.device = dev;            // Kind-Pipeline = Single-Device
         cfg_.devices.clear();
         tag_ = QString::fromStdString(dev);
         int sl = tag_.lastIndexOf('/');
         if (sl >= 0) tag_ = tag_.mid(sl + 1);
+        std::string did;
+        try { did = cdr::drive_id(dev); } catch (...) {}
+        // Karten-Hintergrund (#262b33) → Live-Disc (malt selbst #262b33)
+        // blendet sich nahtlos ein statt heller als die Box zu wirken.
+        setObjectName("drivePanel");
+        setAttribute(Qt::WA_StyledBackground, true);
         auto* v = new QVBoxLayout(this);
-        v->setContentsMargins(6, 6, 6, 6);
-        auto* dl = new QLabel("<b>" + tag_ + "</b>");
-        dl->setAlignment(Qt::AlignHCenter);
-        v->addWidget(dl);
+        v->setContentsMargins(10, 10, 10, 10);
+        // Kopf: Laufwerkspfad + Laufwerks-ID (Hersteller/Modell).
+        auto* hd = new QLabel("<b>" + QString::fromStdString(dev) + "</b>" +
+            (did.empty() ? QString() :
+             "<br><span style='color:#9aa0aa;font-size:8pt;'>" +
+             QString::fromStdString(did).toHtmlEscaped() + "</span>"));
+        hd->setAlignment(Qt::AlignHCenter);
+        hd->setTextFormat(Qt::RichText);
+        v->addWidget(hd);
         cover_ = new QLabel;
         cover_->setFixedSize(150, 150);
         cover_->setFrameShape(QFrame::StyledPanel);
@@ -537,11 +548,7 @@ public:
                    const QStringList&, const QStringList&) {
                 alb_->setText("<b>" + at + "</b><br>" + aa); });
         connect(ctl_, &Controller::coverReady, this,
-            [this](const QString& p) {
-                QPixmap pm(p);
-                if (!pm.isNull())
-                    cover_->setPixmap(pm.scaled(150, 150,
-                        Qt::KeepAspectRatio, Qt::SmoothTransformation)); });
+            [this](const QString& p) { setCover(p); });
         connect(ctl_, &Controller::discScanInit, this,
             [this](int lo, int hi) { disc_->beginScan(lo, hi);
                 cap_->setText("Scan läuft …"); });
@@ -557,35 +564,103 @@ public:
         connect(ctl_, &Controller::discDone, this,
             [this](bool ok, const QString&) {
                 cap_->setText(ok ? "fertig ✓" : "Fehler"); });
+        // Auto-Cover: solange NICHT gerippt wird, Disc beobachten und
+        // Cover/Album automatisch erkennen (lean: MB + Cover, sonst
+        // Platzhalter). Aktive Probe + frische Drive je Poll (D-State-
+        // Gotcha), genau eine Preview-Thread pro Panel.
+        auto* pt = new QTimer(this);
+        connect(pt, &QTimer::timeout, this, [this] { previewTick(); });
+        pt->start(3000);
+    }
+    ~DrivePanel() override {
+        prevStop_ = true;
+        if (prevThr_.joinable()) prevThr_.join();
     }
     void start() { if (!ctl_->running()) ctl_->start(cfg_, false); }
     void stop()  { ctl_->requestStop(); }
     Controller* controller() const { return ctl_; }
     QString     tag() const { return tag_; }
+    std::string device() const { return dev_; }
 private:
-    cdr::Config     cfg_;
-    QString         tag_;
-    QLabel*         cover_;
-    QLabel*         alb_;
-    QLabel*         cap_;
-    DiscScanWidget* disc_;
-    Controller*     ctl_;
+    void setCover(const QString& p) {
+        QPixmap pm(p);
+        if (!pm.isNull())
+            cover_->setPixmap(pm.scaled(150, 150,
+                Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    }
+    void previewTick() {
+        if (ctl_->running() || prevBusy_.load()) return;
+        std::string id;
+        try { id = cdr::probe_disc_id(dev_); } catch (...) { id.clear(); }
+        if (id.empty()) {
+            if (!lastId_.empty()) {                 // Disc raus → zurücksetzen
+                lastId_.clear();
+                cover_->setPixmap(QPixmap()); cover_->setText("kein\nCover");
+                alb_->setText("—"); cap_->setText("bereit");
+            }
+            return;
+        }
+        if (id == lastId_) return;
+        lastId_ = id;
+        prevBusy_ = true;
+        cap_->setText("Disc erkannt — lade Cover …");
+        std::string dev = dev_, ua = cfg_.mb_useragent, tmp = cfg_.tmpdir;
+        if (prevThr_.joinable()) prevThr_.join();
+        prevThr_ = std::thread([this, dev, ua, tmp] {
+            QString at, aa, cov;
+            try {
+                cdr::DiscIdent di = cdr::read_disc_ident(dev);
+                cdr::Album al; bool have = false;
+                try {
+                    auto c = cdr::mb_release_candidates(di.id, ua, di.toc);
+                    if (!c.empty()) { al = c[0]; have = true; }
+                } catch (...) {}
+                if (!have) al = cdr::placeholder_album(di.toc_tracks);
+                at = QString::fromStdString(al.title);
+                aa = QString::fromStdString(al.artist);
+                try {
+                    fs::path d = fs::path(tmp) / "mpreview";
+                    std::error_code ec; fs::create_directories(d, ec);
+                    fs::path out;
+                    if (cdr::fetch_cover(al.mb_release_id, ua, d, out))
+                        cov = QString::fromStdString(out.string());
+                } catch (...) {}
+            } catch (...) {}
+            QMetaObject::invokeMethod(this, [this, at, aa, cov] {
+                if (!at.isEmpty() || !aa.isEmpty())
+                    alb_->setText("<b>" + at + "</b><br>" + aa);
+                if (!cov.isEmpty()) setCover(cov);
+                cap_->setText("bereit — Disc erkannt");
+                prevBusy_ = false;
+            }, Qt::QueuedConnection);
+        });
+    }
+    cdr::Config       cfg_;
+    std::string       dev_;
+    QString           tag_;
+    QLabel*           cover_;
+    QLabel*           alb_;
+    QLabel*           cap_;
+    DiscScanWidget*   disc_;
+    Controller*       ctl_;
+    std::string       lastId_;
+    std::atomic<bool> prevBusy_{false};
+    std::atomic<bool> prevStop_{false};
+    std::thread       prevThr_;
 };
 
 class MultiWindow : public QWidget {
 public:
     explicit MultiWindow(const cdr::Config& base, QWidget* parent = nullptr)
-        : QWidget(parent, Qt::Window) {
+        : QWidget(parent, Qt::Window), base_(base) {
+        setObjectName("multiWin");                 // Dunkler Fenster-BG (QSS)
+        setAttribute(Qt::WA_StyledBackground, true);
         setWindowTitle("CD-Ripper — Multi-Laufwerk");
         resize(1120, 780);
-        std::vector<std::string> devs = cdr::list_optical_devices();
-        if (devs.empty()) devs = base.device_list();
         auto* root = new QVBoxLayout(this);
         auto* bar  = new QHBoxLayout;
-        bar->addWidget(new QLabel(QString::fromUtf8(
-            "<b>%1 Laufwerk(e)</b> — pro Laufwerk eine "
-            "<i>unterschiedliche</i> Disc einlegen, dann 'Alle starten'.")
-            .arg((int)devs.size())));
+        hdr_ = new QLabel;
+        bar->addWidget(hdr_);
         bar->addStretch(1);
         auto* startB = new QPushButton("▶  Alle starten");
         startB->setProperty("primary", true);
@@ -594,25 +669,10 @@ public:
         bar->addWidget(stopB);
         root->addLayout(bar);
         auto* colsW = new QWidget;
-        auto* cols  = new QHBoxLayout(colsW);
-        cols->setSpacing(8);
-        for (const auto& d : devs) {
-            auto* p = new DrivePanel(base, d, colsW);
-            int idx = (int)panels_.size();
-            panels_.push_back(p);
-            cols->addWidget(p);
-            connect(p->controller(), &Controller::trackState, this,
-                [this, idx](int t, int st, double f, const QString& m) {
-                    onTrack(idx, t, st, f, m); });
-            connect(p->controller(), &Controller::logLine, this,
-                [this, p](const QString& l) {
-                    log_->appendPlainText("[" + p->tag() + "] " + l); });
-            connect(p->controller(), &Controller::discDone, this,
-                [this, p](bool ok, const QString& m) {
-                    log_->appendPlainText("[" + p->tag() + "] " +
-                        (ok ? "[OK] " : "[FEHLER] ") + m); });
-        }
-        cols->addStretch(1);
+        cols_ = new QHBoxLayout(colsW);
+        cols_->setSpacing(10);
+        cols_->addStretch(1);                      // links: zentriert die
+        cols_->addStretch(1);                      // rechts:  Spaltengruppe
         auto* sc = new QScrollArea;
         sc->setWidget(colsW);
         sc->setWidgetResizable(true);
@@ -635,8 +695,48 @@ public:
             [this] { for (auto* p : panels_) p->start(); });
         connect(stopB, &QPushButton::clicked, this,
             [this] { for (auto* p : panels_) p->stop(); });
+        // Initiale Laufwerke + Hotplug: alle 3 s neue erkannte Laufwerke
+        // on-the-fly als Spalte addieren (Gruppe bleibt zentriert).
+        std::vector<std::string> devs = cdr::list_optical_devices();
+        if (devs.empty()) devs = base.device_list();
+        for (const auto& d : devs) addPanel(d);
+        auto* hot = new QTimer(this);
+        connect(hot, &QTimer::timeout, this, [this] {
+            for (const auto& d : cdr::list_optical_devices()) {
+                bool known = false;
+                for (auto* p : panels_)
+                    if (p->device() == d) { known = true; break; }
+                if (!known) {
+                    addPanel(d);
+                    log_->appendPlainText("[hotplug] Laufwerk erkannt: " +
+                        QString::fromStdString(d));
+                }
+            }
+        });
+        hot->start(3000);
     }
 private:
+    void addPanel(const std::string& dev) {
+        auto* colsW = cols_->parentWidget();
+        auto* p = new DrivePanel(base_, dev, colsW);
+        int idx = (int)panels_.size();
+        panels_.push_back(p);
+        cols_->insertWidget(cols_->count() - 1, p);  // vor rechtem Stretch
+        connect(p->controller(), &Controller::trackState, this,
+            [this, idx](int t, int st, double f, const QString& m) {
+                onTrack(idx, t, st, f, m); });
+        connect(p->controller(), &Controller::logLine, this,
+            [this, p](const QString& l) {
+                log_->appendPlainText("[" + p->tag() + "] " + l); });
+        connect(p->controller(), &Controller::discDone, this,
+            [this, p](bool ok, const QString& m) {
+                log_->appendPlainText("[" + p->tag() + "] " +
+                    (ok ? "[OK] " : "[FEHLER] ") + m); });
+        hdr_->setText(QString::fromUtf8(
+            "<b>%1 Laufwerk(e)</b> — pro Laufwerk eine "
+            "<i>unterschiedliche</i> Disc einlegen, dann 'Alle starten'.")
+            .arg((int)panels_.size()));
+    }
     void onTrack(int drive, int t, int st, double f, const QString& m) {
         QString key = QString::number(drive) + "-" + QString::number(t);
         auto it = rows_.find(key);
@@ -660,6 +760,9 @@ private:
         if (!m.isEmpty() && tbl_->item(row, 2)->text().isEmpty())
             tbl_->item(row, 2)->setText(m);
     }
+    cdr::Config              base_;
+    QHBoxLayout*             cols_ = nullptr;
+    QLabel*                  hdr_  = nullptr;
     std::vector<DrivePanel*> panels_;
     QMap<QString, int>       rows_;
     QTableWidget*            tbl_;
