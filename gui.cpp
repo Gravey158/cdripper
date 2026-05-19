@@ -581,6 +581,8 @@ public:
     Controller* controller() const { return ctl_; }
     QString     tag() const { return tag_; }
     std::string device() const { return dev_; }
+    // Von MultiWindow gesetzt: Trackliste aus der Preview → Sammeltabelle.
+    std::function<void(const QStringList&)> onTracks;
 private:
     void setCover(const QString& p) {
         QPixmap pm(p);
@@ -608,6 +610,7 @@ private:
         if (prevThr_.joinable()) prevThr_.join();
         prevThr_ = std::thread([this, dev, ua, tmp] {
             QString at, aa, cov;
+            QStringList tl;                          // Trackliste (Titel)
             try {
                 cdr::DiscIdent di = cdr::read_disc_ident(dev);
                 cdr::Album al; bool have = false;
@@ -618,6 +621,8 @@ private:
                 if (!have) al = cdr::placeholder_album(di.toc_tracks);
                 at = QString::fromStdString(al.title);
                 aa = QString::fromStdString(al.artist);
+                for (const auto& trk : al.tracks)
+                    tl << QString::fromStdString(trk.title);
                 try {
                     fs::path d = fs::path(tmp) / "mpreview";
                     std::error_code ec; fs::create_directories(d, ec);
@@ -626,10 +631,13 @@ private:
                         cov = QString::fromStdString(out.string());
                 } catch (...) {}
             } catch (...) {}
-            QMetaObject::invokeMethod(this, [this, at, aa, cov] {
+            QMetaObject::invokeMethod(this, [this, at, aa, cov, tl] {
                 if (!at.isEmpty() || !aa.isEmpty())
                     alb_->setText("<b>" + at + "</b><br>" + aa);
                 if (!cov.isEmpty()) setCover(cov);
+                // Trackliste sofort an die gemeinsame Tabelle melden
+                // (erscheint pro Laufwerk noch vor dem Rip).
+                if (onTracks && !tl.isEmpty()) onTracks(tl);
                 cap_->setText("bereit — Disc erkannt");
                 prevBusy_ = false;
             }, Qt::QueuedConnection);
@@ -732,28 +740,40 @@ private:
             [this, p](bool ok, const QString& m) {
                 log_->appendPlainText("[" + p->tag() + "] " +
                     (ok ? "[OK] " : "[FEHLER] ") + m); });
+        p->onTracks = [this, idx](const QStringList& titles) {
+            fillPreviewTracks(idx, titles); };
         hdr_->setText(QString::fromUtf8(
             "<b>%1 Laufwerk(e)</b> — pro Laufwerk eine "
             "<i>unterschiedliche</i> Disc einlegen, dann 'Alle starten'.")
             .arg((int)panels_.size()));
     }
-    void onTrack(int drive, int t, int st, double f, const QString& m) {
+    int ensureRow(int drive, int t) {
         QString key = QString::number(drive) + "-" + QString::number(t);
         auto it = rows_.find(key);
-        int row;
-        if (it == rows_.end()) {
-            row = tbl_->rowCount();
-            tbl_->insertRow(row);
-            rows_.insert(key, row);
-            tbl_->setItem(row, 0,
-                new QTableWidgetItem(panels_[drive]->tag()));
-            tbl_->setItem(row, 1,
-                new QTableWidgetItem(QString::number(t)));
-            for (int c = 2; c < 5; ++c)
-                tbl_->setItem(row, c, new QTableWidgetItem(""));
-        } else {
-            row = it.value();
+        if (it != rows_.end()) return it.value();
+        int row = tbl_->rowCount();
+        tbl_->insertRow(row);
+        rows_.insert(key, row);
+        tbl_->setItem(row, 0,
+            new QTableWidgetItem(panels_[drive]->tag()));
+        tbl_->setItem(row, 1, new QTableWidgetItem(QString::number(t)));
+        for (int c = 2; c < 5; ++c)
+            tbl_->setItem(row, c, new QTableWidgetItem(""));
+        return row;
+    }
+    // Trackliste aus der Preview sofort einfüllen (vor dem Rip): Titel +
+    // Status „erkannt". Der Rip aktualisiert später dieselben Zeilen
+    // (gleiche drive-track-Keys) — Titel bleibt stehen.
+    void fillPreviewTracks(int drive, const QStringList& titles) {
+        for (int i = 0; i < titles.size(); ++i) {
+            int row = ensureRow(drive, i + 1);
+            tbl_->item(row, 2)->setText(titles[i]);
+            if (tbl_->item(row, 3)->text().isEmpty())
+                tbl_->item(row, 3)->setText("erkannt");
         }
+    }
+    void onTrack(int drive, int t, int st, double f, const QString& m) {
+        int row = ensureRow(drive, t);
         tbl_->item(row, 3)->setText(QString::fromUtf8(
             cdr::state_label((cdr::TrackState)st)));
         tbl_->item(row, 4)->setText(QString::number((int)(f * 100)) + "%");
