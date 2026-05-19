@@ -386,6 +386,40 @@ int main() {
                  "dmg Scuff+hung → bleibt Scuff (Override nur bei Mixed)");
     }
 
+    // ── T7: Config-Mehrfach-Laufwerke (device_list + Roundtrip) ────────
+    {
+        Config d0;                                  // Default
+        CHECK_EQ((int)d0.device_list().size(), 1, "device_list default 1");
+        CHECK_EQ(d0.device_list()[0], std::string("/dev/sr0"),
+                 "device_list default = device");
+        Config dm;
+        dm.devices = { "/dev/sr0", "/dev/sr1", "/dev/sr2" };
+        CHECK_EQ((int)dm.device_list().size(), 3, "device_list multi 3");
+        CHECK_EQ(dm.device_list()[2], std::string("/dev/sr2"),
+                 "device_list multi ord");
+        // Roundtrip durch config.ini (devices a,b bleiben erhalten).
+        std::error_code ec;
+        fs::path cp = fs::temp_directory_path() /
+            ("cdr-t7-" + std::to_string(::getpid()) + ".ini");
+        Config w; w.devices = { "/dev/sr0", "/dev/sr1" };
+        CHECK(save_config(w, cp.string()), "save_config ok");
+        Config r = load_config(cp.string());
+        CHECK_EQ((int)r.devices.size(), 2, "RT devices size 2");
+        CHECK_EQ(r.devices[0], std::string("/dev/sr0"), "RT devices[0]");
+        CHECK_EQ(r.devices[1], std::string("/dev/sr1"), "RT devices[1]");
+        CHECK_EQ((int)r.device_list().size(), 2, "RT device_list 2");
+        fs::remove(cp, ec);
+        // Leeres devices → Roundtrip lässt es leer (Single-Drive-Subset).
+        fs::path cp2 = fs::temp_directory_path() /
+            ("cdr-t7b-" + std::to_string(::getpid()) + ".ini");
+        Config w2;                                  // devices leer
+        CHECK(save_config(w2, cp2.string()), "save_config single ok");
+        Config r2 = load_config(cp2.string());
+        CHECK(r2.devices.empty(), "RT single → devices leer");
+        CHECK_EQ((int)r2.device_list().size(), 1, "RT single device_list 1");
+        fs::remove(cp2, ec);
+    }
+
     std::printf("\n%d OK, %d FAIL\n", g_ok, g_fail);
     return g_fail ? 1 : 0;
 }

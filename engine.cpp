@@ -11,6 +11,7 @@
 #include <ctime>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 
@@ -187,6 +188,14 @@ Config load_config(const std::string& path) {
             if (eq == std::string::npos) continue;
             std::string k = trim(line.substr(0, eq)), v = trim(line.substr(eq + 1));
             if      (k == "device")        c.device       = v;
+            else if (k == "devices") {                 // T7: a,b,c
+                c.devices.clear();
+                std::stringstream ss(v); std::string one;
+                while (std::getline(ss, one, ',')) {
+                    one = trim(one);
+                    if (!one.empty()) c.devices.push_back(one);
+                }
+            }
             else if (k == "nextcloud_url") c.nextcloud_url = v;
             else if (k == "webdav_user")   c.webdav_user   = v;
             else if (k == "webdav_pass")   c.webdav_pass   = v;
@@ -292,6 +301,12 @@ bool save_config(const Config& c, const std::string& path) {
       << "registry_submit = " << b(c.registry_submit) << "\n"
       << "registry_stats = "  << b(c.registry_stats)  << "\n"
       << "registry_condition = " << b(c.registry_condition) << "\n";
+    if (!c.devices.empty()) {                  // T7: Mehrfach-Laufwerke
+        f << "devices = ";
+        for (size_t i = 0; i < c.devices.size(); ++i)
+            f << (i ? "," : "") << c.devices[i];
+        f << "\n";
+    }
     f.close();
     ::chmod(path.c_str(), 0600);   // enthält Passwörter
     return true;
@@ -852,6 +867,12 @@ static json entry_to_json(const ArchiveEntry& e) {
 }
 
 bool append_archive(const ArchiveEntry& e) {
+    // T7: bei parallelen Pipelines (Multi-Laufwerk) ist das hier ein
+    // Read-modify-write übers selbe File → ohne Lock verliert man
+    // Einträge und der gemeinsame .tmp clobbert sich. Prozess-global
+    // serialisieren (alles In-Process-Threads); .tmp pro Aufruf eindeutig.
+    static std::mutex mu;
+    std::lock_guard<std::mutex> lk(mu);
     json j = json::array();
     {
         std::ifstream f(archive_path());
@@ -861,7 +882,8 @@ bool append_archive(const ArchiveEntry& e) {
     j.push_back(entry_to_json(e));
     std::error_code ec;
     fs::create_directories(config_dir(), ec);
-    std::string tmp = archive_path() + ".tmp";
+    std::string tmp = archive_path() + ".tmp." +
+                      std::to_string(::getpid());
     {
         std::ofstream o(tmp, std::ios::trunc);
         if (!o) return false;
@@ -2144,6 +2166,10 @@ static std::string log_dir() {
 }
 
 void log_to_file(const std::string& line) {
+    // T7: parallele Pipelines → Rotate-Check + localtime (statischer
+    // Puffer) sind nicht thread-safe; serialisieren.
+    static std::mutex mu;
+    std::lock_guard<std::mutex> lk(mu);
     try {
         std::string dir = log_dir();
         std::error_code ec;

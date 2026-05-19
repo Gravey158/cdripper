@@ -27,62 +27,112 @@ std::string mmss(double s) {
 }
 }
 
-int run_cli(const cdr::Config& cfg, bool once) {
-    std::signal(SIGINT,  on_sig);
-    std::signal(SIGTERM, on_sig);
-
+// Callbacks für ein Laufwerk. tag leer = Single-Drive (exakt das alte
+// Verhalten, inkl. \r-Statuszeilen). tag gesetzt = Multi-Drive: jede
+// Meldung mit „[tag] " geprefixt und \n-terminiert (kein \r-Cursor-
+// Trick, weil mehrere Laufwerke dasselbe Terminal teilen).
+static cdr::Callbacks make_cli_cb(const std::string& tag) {
+    const bool m = !tag.empty();
+    const std::string p = m ? "[" + tag + "] " : std::string();
     cdr::Callbacks cb;
-    cb.onWaiting = [](const std::string& m) {
-        std::fprintf(stderr, "\n⏏  %s\n", m.c_str());
+    cb.onWaiting = [p](const std::string& s) {
+        std::fprintf(stderr, "\n%s⏏  %s\n", p.c_str(), s.c_str());
     };
-    cb.onDiscIdent = [](const cdr::DiscIdent& d) {
-        std::fprintf(stderr, "[disc] %s (%d Tracks laut TOC)\n",
-                     d.id.c_str(), d.toc_tracks);
+    cb.onDiscIdent = [p](const cdr::DiscIdent& d) {
+        std::fprintf(stderr, "%s[disc] %s (%d Tracks laut TOC)\n",
+                     p.c_str(), d.id.c_str(), d.toc_tracks);
     };
-    cb.onAlbum = [](const cdr::Album& a) {
-        std::fprintf(stderr, "[album] %s — %s (%s), %zu Tracks\n",
-                     a.artist.c_str(), a.title.c_str(),
+    cb.onAlbum = [p](const cdr::Album& a) {
+        std::fprintf(stderr, "%s[album] %s — %s (%s), %zu Tracks\n",
+                     p.c_str(), a.artist.c_str(), a.title.c_str(),
                      a.year().c_str(), a.tracks.size());
     };
-    cb.onCover = [](const fs::path& p) {
-        std::fprintf(stderr, "[cover] %s\n", p.string().c_str());
+    cb.onCover = [p](const fs::path& fp) {
+        std::fprintf(stderr, "%s[cover] %s\n", p.c_str(),
+                     fp.string().c_str());
     };
-    cb.onTrack = [](int i, cdr::TrackState s, double f, const std::string& m) {
-        if (s == cdr::TrackState::Ripping || s == cdr::TrackState::Uploading)
+    cb.onTrack = [p, m](int i, cdr::TrackState s, double f,
+                        const std::string& msg) {
+        const char* nl = m ? "\n" : "\r";
+        if (!m && (s == cdr::TrackState::Ripping ||
+                   s == cdr::TrackState::Uploading))
             std::fprintf(stderr, "\r[t%02d] %-9s %3d%%   ",
                          i, cdr::state_label(s), (int)(f * 100));
+        else if (s == cdr::TrackState::Ripping ||
+                 s == cdr::TrackState::Uploading)
+            std::fprintf(stderr, "%s[t%02d] %-9s %3d%%\n",
+                         p.c_str(), i, cdr::state_label(s),
+                         (int)(f * 100));
         else
-            std::fprintf(stderr, "\r[t%02d] %-9s %s%s\n", i,
+            std::fprintf(stderr, "%s%s[t%02d] %-9s %s%s\n",
+                         m ? "" : "\r", p.c_str(), i,
                          cdr::state_label(s),
                          (s == cdr::TrackState::Done ? "✓" : ""),
-                         m.empty() ? "" : (" — " + m).c_str());
-        std::fflush(stderr);
+                         msg.empty() ? "" : (" — " + msg).c_str());
+        (void)nl; std::fflush(stderr);
     };
     cb.onMetrics = [](double r, double en, double up) {
         g_mr = r; g_me = en; g_mu = up;
     };
-    cb.onProgress = [](double e, double eta, int r, int u, int t) {
-        std::fprintf(stderr,
-            "\r[zeit %s · rest ~%s · rip %d/%d · up %d/%d · "
-            "R %.1f E %.1f U %.1f MB/s]   ",
-            mmss(e).c_str(), mmss(eta).c_str(), r, t, u, t,
-            g_mr, g_me, g_mu);
+    cb.onProgress = [p, m](double e, double eta, int r, int u, int t) {
+        if (m)   // Multi: keine MB/s (g_m* sind global/geteilt) + \n
+            std::fprintf(stderr,
+                "%s[zeit %s · rest ~%s · rip %d/%d · up %d/%d]\n",
+                p.c_str(), mmss(e).c_str(), mmss(eta).c_str(),
+                r, t, u, t);
+        else
+            std::fprintf(stderr,
+                "\r[zeit %s · rest ~%s · rip %d/%d · up %d/%d · "
+                "R %.1f E %.1f U %.1f MB/s]   ",
+                mmss(e).c_str(), mmss(eta).c_str(), r, t, u, t,
+                g_mr, g_me, g_mu);
         std::fflush(stderr);
     };
-    cb.onLog = [](const std::string& l) {
-        std::fprintf(stderr, "\n[log] %s\n", l.c_str());
-        cdr::log_to_file(l);
+    cb.onLog = [p](const std::string& l) {
+        std::fprintf(stderr, "\n%s[log] %s\n", p.c_str(), l.c_str());
+        cdr::log_to_file(p + l);
     };
-    cb.onDiscDone = [](bool ok, const std::string& m) {
-        std::fprintf(stderr, "\n%s %s\n", ok ? "[OK]" : "[FEHLER]", m.c_str());
-        cdr::log_to_file((ok ? "[OK] " : "[FEHLER] ") + m);
+    cb.onDiscDone = [p](bool ok, const std::string& msg) {
+        std::fprintf(stderr, "\n%s%s %s\n", p.c_str(),
+                     ok ? "[OK]" : "[FEHLER]", msg.c_str());
+        cdr::log_to_file(p + (ok ? "[OK] " : "[FEHLER] ") + msg);
     };
-    cb.onFatal = [](const std::string& m) {
-        std::fprintf(stderr, "\n[FATAL] %s\n", m.c_str());
+    cb.onFatal = [p](const std::string& msg) {
+        std::fprintf(stderr, "\n%s[FATAL] %s\n", p.c_str(), msg.c_str());
     };
+    return cb;
+}
 
-    cdr::Pipeline pl(cfg, std::move(cb));
-    pl.run(g_stop, once);
+int run_cli(const cdr::Config& cfg, bool once) {
+    std::signal(SIGINT,  on_sig);
+    std::signal(SIGTERM, on_sig);
+
+    std::vector<std::string> devs = cfg.device_list();
+    if (devs.size() <= 1) {                       // Single-Drive (unverändert)
+        cdr::Config c = cfg;
+        if (!devs.empty()) c.device = devs[0];
+        cdr::Pipeline pl(c, make_cli_cb(""));
+        pl.run(g_stop, once);
+    } else {                                      // T7: parallel
+        std::fprintf(stderr,
+            "[multi] %zu Laufwerke parallel — je eine Disc pro Laufwerk "
+            "einlegen (NICHT dieselbe Disc in zwei Laufwerke).\n",
+            devs.size());
+        std::vector<std::thread> th;
+        for (const auto& d : devs) {
+            th.emplace_back([&cfg, d, once] {
+                cdr::Config c = cfg;
+                c.device = d;
+                c.devices.clear();          // Kind-Pipeline = Single
+                std::string tag = d;
+                auto sl = tag.find_last_of('/');
+                if (sl != std::string::npos) tag = tag.substr(sl + 1);
+                cdr::Pipeline pl(c, make_cli_cb(tag));
+                pl.run(g_stop, once);
+            });
+        }
+        for (auto& t : th) t.join();
+    }
     std::fprintf(stderr, "\ncdripper beendet.\n");
     return 0;
 }

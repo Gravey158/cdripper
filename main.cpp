@@ -5,6 +5,7 @@
 #include <cstring>
 #include <iostream>
 #include <string>
+#include <vector>
 
 int run_cli(const cdr::Config& cfg, bool once);   // cli.cpp
 int run_calibrate(const cdr::Config& cfg);        // cli.cpp
@@ -23,7 +24,8 @@ static void usage(const char* a0) {
     std::cerr <<
       "cdripper — Audio-CD → FLAC → Nextcloud (Navidrome)\n"
       "  " << a0 << " [Optionen]\n"
-      "    --device PFAD   Laufwerk (Default aus Config / /dev/sr0)\n"
+      "    --device PFAD   Laufwerk (mehrfach = parallel, nur --cli)\n"
+      "    --all-drives    alle erkannten Laufwerke parallel (--cli)\n"
       "    --config PFAD   Config-Datei (Default ~/.config/cdripper/config.ini)\n"
       "    --once          Nur eine CD verarbeiten, dann beenden\n"
       "    --dry-run       Rippen+Encoden, aber NICHT hochladen\n"
@@ -50,13 +52,16 @@ int main(int argc, char** argv) {
     }
 
     std::string cfg_path;          // leer = aus aktivem Profil ableiten
-    std::string dev_override;
+    std::vector<std::string> dev_overrides;     // T7: --device mehrfach
+    bool all_drives = false;                     // T7: --all-drives
     bool once = false, dry = false, force_cli = false, force_gui = false;
     bool calibrate = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
-        if      (a == "--device" && i + 1 < argc) dev_override = argv[++i];
+        if      (a == "--device" && i + 1 < argc)
+            dev_overrides.push_back(argv[++i]);  // mehrfach = Multi-Laufwerk
+        else if (a == "--all-drives") all_drives = true;
         else if (a == "--config" && i + 1 < argc) cfg_path     = argv[++i];
         else if (a == "--once")    once      = true;
         else if (a == "--dry-run") dry       = true;
@@ -74,7 +79,16 @@ int main(int argc, char** argv) {
         cfg_path = cdr::profile_path(cdr::active_profile());
     cdr::set_config_path(cfg_path);     // drive_offsets.ini neben die Config
     cdr::Config cfg = cdr::load_config(cfg_path);
-    if (!dev_override.empty()) cfg.device = dev_override;
+    if (all_drives) {                            // T7: alle erkannten
+        auto all = cdr::list_optical_devices();
+        if (!all.empty()) { cfg.devices = all; cfg.device = all.front(); }
+    } else if (dev_overrides.size() == 1) {
+        cfg.device = dev_overrides[0];           // Single (Legacy)
+        cfg.devices.clear();
+    } else if (dev_overrides.size() > 1) {       // Multi
+        cfg.devices = dev_overrides;
+        cfg.device  = dev_overrides.front();
+    }
     if (dry) cfg.dry_run = true;
 
     cdr::curl_global_setup();

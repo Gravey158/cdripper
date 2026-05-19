@@ -21,10 +21,17 @@ namespace cdr {
 //   PATCH  kleiner Bugfix / kleine Änderung
 // Bei jeder veröffentlichten Änderung hier hochzählen und im lokalen
 // Git-Repo einen passenden Tag setzen (git tag -a vX.Y.Z).
-constexpr const char* VERSION = "1.3.0";
+constexpr const char* VERSION = "1.4.0";
 
 struct Config {
-    std::string device        = "/dev/sr0";
+    std::string device        = "/dev/sr0";   // primäres/Single-Laufwerk
+    // T7: optionale Mehrfach-Laufwerksliste (parallel im CLI). Leer →
+    // genau { device } (Single-Drive = exakter Subset, unverändert).
+    std::vector<std::string> devices;
+    std::vector<std::string> device_list() const {
+        return devices.empty() ? std::vector<std::string>{ device }
+                               : devices;
+    }
     std::string nextcloud_url = "https://n1-k58z.x2-pandora.de";
     std::string webdav_user   = "cabanskid";
     std::string webdav_pass;            // NIE im Code — Config-Datei/Env
