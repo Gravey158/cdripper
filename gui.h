@@ -26,6 +26,7 @@ class QSpinBox;
 class QStackedWidget;
 class QSystemTrayIcon;
 class QCloseEvent;
+class MultiWindow;                 // T7-GUI: Multi-Laufwerk-Fenster
 
 // Wrappt cdr::Pipeline: marshalt alle Callbacks (die aus Worker-Threads kommen)
 // in Qt-Signals mit reinen Qt-Typen → cross-thread queued, kein qRegisterMetaType.
@@ -151,6 +152,7 @@ private:
     class DiscScanWidget* discScan_ = nullptr;   // Live-Scan im Hauptfenster
     QLabel* discScanCap_ = nullptr;              // Status unter der Disc
     QWidget* coverSpin_ = nullptr;               // Cover-Easter-Egg (Overlay)
+    MultiWindow* multiWin_ = nullptr;            // T7-GUI (Single-Instanz)
 
     QComboBox*  device_;                         // erkannte Laufwerke
     QCheckBox*  dryRun_;
