@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=CD Ripper
+GenericName=Audio CD Ripper
+Comment=Rip audio CDs to FLAC with MusicBrainz tagging and AccurateRip verification
+Exec=cdripper --gui
+Icon=io.github.gravey158.cdripper
+Categories=AudioVideo;Audio;
+Terminal=false
+StartupNotify=true

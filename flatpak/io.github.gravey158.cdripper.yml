@@ -1,0 +1,135 @@
+# cdripper Flatpak-Manifest.
+#
+# Baut alle nicht-Runtime-Deps aus Quelle gegen org.kde.Sdk//6.7 — die KDE-
+# Platform liefert Qt6 + glibc + libcurl + libstdc++ ABI-stabil. Damit
+# entfällt das Cross-Distro-libcrypt-Drama, das AppImage-Builds auf Bazzite
+# zerlegt hat.
+#
+# Verwendete Git-Quellen statt Tarballs: tag-pinned, kein SHA256 nötig,
+# einfach updatebar (Tag bumpen).
+#
+# Build (auf Bazzite-Distrobox `ripper`):
+#   scripts/build-flatpak.sh
+#
+# Publish:
+#   flatpak build-bundle <repo> cdripper.flatpak io.github.gravey158.cdripper
+#   kubectl -n flatpak-repo cp <ostree-export> ...:/repo/
+app-id: io.github.gravey158.cdripper
+runtime: org.kde.Platform
+runtime-version: '6.7'
+sdk: org.kde.Sdk
+command: cdripper
+
+# Sandbox-Berechtigungen. Minimal aber funktionsfähig.
+finish-args:
+  # CD-/optische Laufwerke (/dev/sr*, /dev/cdrom-symlinks)
+  - --device=all
+  # MusicBrainz, AcoustID, LRCLib, Nextcloud-Upload
+  - --share=network
+  # Qt-X11-Shared-Memory
+  - --share=ipc
+  # GUI
+  - --socket=wayland
+  - --socket=fallback-x11
+  # Speicher-Ziel: User-Music/Downloads. Volle home-Bereich wäre overkill —
+  # cdripper schreibt nur unter ~/Music/cdripper (Default) bzw. einem in der
+  # Settings konfigurierten Pfad. xdg-music ist Standard-Music-Verzeichnis.
+  - --filesystem=xdg-music
+  - --filesystem=xdg-download
+  # Settings unter ~/.config/cdripper (Flatpak gibt eh nur xdg-config-Slice frei)
+  # Konfig + Archiv-DB liegt unter ~/.var/app/io.github.gravey158.cdripper/config
+  # automatisch — kein zusätzlicher Permissions-Eintrag nötig.
+  - --talk-name=org.freedesktop.Notifications
+
+cleanup:
+  # Header + statische Libs nicht ins Final-Bundle
+  - /include
+  - /lib/pkgconfig
+  - /lib/cmake
+  - /share/aclocal
+  - /share/man
+  - '*.la'
+  - '*.a'
+
+modules:
+  # libcdio: CD-IO + .npcbot list-Parsing — Kern unserer Laufwerks-API.
+  - name: libcdio
+    buildsystem: autotools
+    config-opts:
+      - --disable-static
+      - --disable-cxx
+      - --disable-example-progs
+    sources:
+      - type: git
+        url: https://git.savannah.gnu.org/git/libcdio.git
+        tag: release-2.1.0
+
+  # libcdio_paranoia: Sample-genaues Lesen, AccurateRip-Basis.
+  - name: libcdio-paranoia
+    buildsystem: autotools
+    config-opts:
+      - --disable-static
+      - --disable-example-progs
+    sources:
+      - type: git
+        url: https://git.savannah.gnu.org/git/libcdio-paranoia.git
+        tag: release-10.2+2.0.2
+
+  # libdiscid: MusicBrainz Disc-ID-Berechnung (TOC-Hash).
+  - name: libdiscid
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DBUILD_SHARED_LIBS=ON
+      - -DBUILD_TESTS=OFF
+    sources:
+      - type: git
+        url: https://github.com/metabrainz/libdiscid.git
+        tag: v0.6.4
+
+  # nlohmann/json: header-only — install via CMake.
+  - name: nlohmann-json
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DJSON_BuildTests=OFF
+      - -DJSON_MultipleHeaders=OFF
+    sources:
+      - type: git
+        url: https://github.com/nlohmann/json.git
+        tag: v3.11.3
+
+  # FLAC: liefert libFLAC + CLI-Tools flac/metaflac. Cdripper's Pipeline
+  # ruft `flac` und `metaflac` via std::system auf — beide MÜSSEN im
+  # $PATH des Flatpak-Sandboxen liegen.
+  - name: flac
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DBUILD_SHARED_LIBS=ON
+      - -DBUILD_TESTING=OFF
+      - -DBUILD_EXAMPLES=OFF
+      - -DBUILD_DOCS=OFF
+      - -DINSTALL_MANPAGES=OFF
+    sources:
+      - type: git
+        url: https://github.com/xiph/flac.git
+        tag: 1.4.3
+
+  # cdripper selbst. Quelle = Repo-Wurzel (../).
+  - name: cdripper
+    buildsystem: cmake-ninja
+    builddir: true
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+    sources:
+      - type: dir
+        path: ..
+        skip:
+          - build
+          - build-flatpak
+          - .git
+    post-install:
+      # .desktop-Eintrag
+      - install -Dm644 flatpak/cdripper.desktop /app/share/applications/io.github.gravey158.cdripper.desktop
+      # Icon (PNG aus SVG generiert)
+      - install -Dm644 flatpak/cdripper.png /app/share/icons/hicolor/256x256/apps/io.github.gravey158.cdripper.png
+      # AppData für Software-Center-Discovery
+      - install -Dm644 flatpak/cdripper.appdata.xml /app/share/metainfo/io.github.gravey158.cdripper.appdata.xml

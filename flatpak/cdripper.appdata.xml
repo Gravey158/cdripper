@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.gravey158.cdripper</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>CD Ripper</name>
+  <summary>Audio CD ripper with MusicBrainz tagging</summary>
+  <description>
+    <p>
+      A no-nonsense audio CD ripper that produces verified FLAC files with
+      MusicBrainz metadata, AccurateRip verification, embedded cover art,
+      and synced lyrics from LRCLib.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>libcdio-paranoia for sample-accurate reads</li>
+      <li>MusicBrainz disc ID lookup with TOC-fuzzy fallback</li>
+      <li>AccurateRip CRC verification</li>
+      <li>Multi-disc / box-set aware track numbering</li>
+      <li>Multi-drive parallel ripping</li>
+      <li>Direct upload to WebDAV (Nextcloud) targets</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.gravey158.cdripper.desktop</launchable>
+  <url type="homepage">https://github.com/Gravey158/cdripper</url>
+  <developer_name>Dennis</developer_name>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="1.7.0" date="2026-05-20">
+      <description>
+        <p>Flatpak packaging (Wave 0b).</p>
+      </description>
+    </release>
+  </releases>
+</component>
