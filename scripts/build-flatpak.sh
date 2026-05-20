@@ -49,6 +49,7 @@ flatpak-builder \
   --user \
   --force-clean \
   --install-deps-from=flathub \
+  --disable-rofiles-fuse \
   --repo="$REPO" \
   --state-dir="$BUILD/.flatpak-builder" \
   "$BUILD/build" \

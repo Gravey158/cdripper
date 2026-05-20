@@ -52,27 +52,45 @@ cleanup:
   - '*.a'
 
 modules:
-  # libcdio: CD-IO + .npcbot list-Parsing — Kern unserer Laufwerks-API.
+  # libcdio: CD-IO-API. CLI-Tools in src/ haben unconditional help2man-
+  # Makefile-Target, das im SDK-Sandbox bricht (kein help2man drin). Wir
+  # bauen explizit nur lib/ — cdripper linkt nur gegen die libs.
   - name: libcdio
-    buildsystem: autotools
-    config-opts:
-      - --disable-static
-      - --disable-cxx
-      - --disable-example-progs
+    buildsystem: simple
+    # KDE-Sdk hat weder help2man (für src/) noch texinfo+version.texi (für
+    # doc/). Beide Subdirs überspringen, nur lib/ bauen — wir brauchen nur
+    # die Shared Libs + Header + pkgconfig-Files.
+    build-commands:
+      - autoreconf -fiv
+      - ./configure --prefix=/app --libdir=/app/lib --disable-static --disable-cxx --disable-example-progs --disable-cpp-progs
+      - make -j$(nproc) -C lib
+      - make -C lib install
+      # Header und .pc-Files: include/ und ggf. top-level installieren.
+      - make -C include install
+      - install -d /app/lib/pkgconfig
+      - find . -maxdepth 3 -name '*.pc' -exec install -m644 {} /app/lib/pkgconfig/ \;
     sources:
       - type: git
         url: https://git.savannah.gnu.org/git/libcdio.git
         tag: release-2.1.0
 
-  # libcdio_paranoia: Sample-genaues Lesen, AccurateRip-Basis.
+  # libcdio_paranoia: Sample-genaues Lesen, AccurateRip-Basis. Upstream-Repo
+  # lebt bei rocky/libcdio-paranoia auf GitHub (savannah hat es nicht als
+  # separates git-Repo).
   - name: libcdio-paranoia
-    buildsystem: autotools
-    config-opts:
-      - --disable-static
-      - --disable-example-progs
+    buildsystem: simple
+    # Selbe Strategie wie libcdio — nur lib/ bauen.
+    build-commands:
+      - autoreconf -fiv
+      - ./configure --prefix=/app --libdir=/app/lib --disable-static --disable-example-progs
+      - make -j$(nproc) -C lib
+      - make -C lib install
+      - make -C include install
+      - install -d /app/lib/pkgconfig
+      - find . -maxdepth 3 -name '*.pc' -exec install -m644 {} /app/lib/pkgconfig/ \;
     sources:
       - type: git
-        url: https://git.savannah.gnu.org/git/libcdio-paranoia.git
+        url: https://github.com/rocky/libcdio-paranoia.git
         tag: release-10.2+2.0.2
 
   # libdiscid: MusicBrainz Disc-ID-Berechnung (TOC-Hash).
@@ -127,9 +145,7 @@ modules:
           - build-flatpak
           - .git
     post-install:
-      # .desktop-Eintrag
-      - install -Dm644 flatpak/cdripper.desktop /app/share/applications/io.github.gravey158.cdripper.desktop
-      # Icon (PNG aus SVG generiert)
-      - install -Dm644 flatpak/cdripper.png /app/share/icons/hicolor/256x256/apps/io.github.gravey158.cdripper.png
-      # AppData für Software-Center-Discovery
-      - install -Dm644 flatpak/cdripper.appdata.xml /app/share/metainfo/io.github.gravey158.cdripper.appdata.xml
+      # builddir=true → PWD ist <source>/_flatpak_build; Pfade relativ über ../
+      - install -Dm644 ../flatpak/cdripper.desktop /app/share/applications/io.github.gravey158.cdripper.desktop
+      - install -Dm644 ../flatpak/cdripper.png /app/share/icons/hicolor/256x256/apps/io.github.gravey158.cdripper.png
+      - install -Dm644 ../flatpak/cdripper.appdata.xml /app/share/metainfo/io.github.gravey158.cdripper.appdata.xml
