@@ -433,8 +433,27 @@ void Pipeline::process_disc(Drive& drv, const std::atomic<bool>& stop,
                     std::string lrc = fetch_synced_lyrics(
                         tr.artist, tr.title, al.title, dur, cfg_.mb_useragent);
                     if (!lrc.empty()) {
-                        std::ofstream lf(work / (std::to_string(*idx) + ".lrc"));
-                        lf << lrc;
+                        auto lrcp = work / (std::to_string(*idx) + ".lrc");
+                        { std::ofstream lf(lrcp); lf << lrc; }
+                        // Sidecar bleibt liegen (für VLC/foobar/etc.). ABER
+                        // Navidrome 0.61 liest KEINE .lrc-Sidecars — nur
+                        // eingebettete Vorbis-`LYRICS`-Tags. Synced LRC mit
+                        // [mm:ss.xx]-Timestamps wird automatisch als synced
+                        // erkannt. Nur FLAC (Default); MP3/Opus später bei
+                        // Bedarf analog.
+                        if (enc.extension() == ".flac" &&
+                            enc.string().find('\'') == std::string::npos &&
+                            lrcp.string().find('\'') == std::string::npos) {
+                            std::string cmd =
+                                "metaflac --remove-tag=LYRICS '" +
+                                enc.string() + "' 2>/dev/null; "
+                                "metaflac --set-tag-from-file=LYRICS='" +
+                                lrcp.string() + "' '" + enc.string() + "'";
+                            if (std::system(cmd.c_str()) != 0 && cb_.onLog)
+                                cb_.onLog("Track " + std::to_string(*idx) +
+                                    ": LYRICS-Tag einbetten fehlgeschlagen "
+                                    "(metaflac).");
+                        }
                     }
                 }
                 std::error_code e;
