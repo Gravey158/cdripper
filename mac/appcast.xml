@@ -8,12 +8,27 @@
         <description>Automatic update feed for CD Ripper.</description>
         <language>en</language>
         <item>
+            <title>Version 1.7.10</title>
+            <pubDate>Thu, 21 May 2026 10:24:22 +0200</pubDate>
+            <sparkle:version>1.7.10</sparkle:version>
+            <sparkle:shortVersionString>1.7.10</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[<p>See git log v1.7.10 for changes.</p>]]></description>
+            <enclosure
+                url="https://flatpak.x2-pandora.de/cdripper/cdripper-1.7.10-macos-x86_64.dmg"
+                sparkle:version="1.7.10"
+                sparkle:shortVersionString="1.7.10"
+                length="39559307"
+                type="application/octet-stream"
+                sparkle:edSignature="CoDM38npKieBbXuhUdOgvI89mGjd0yg8CotaE/vtM/rPDKChZa7XW/CHTTD6lMGXkx6GUe5i7c5lbC4KF6D0Dg==" />
+        </item>
+        <item>
             <title>Version 1.7.9</title>
             <pubDate>Thu, 21 May 2026 10:03:29 +0200</pubDate>
             <sparkle:version>1.7.9</sparkle:version>
             <sparkle:shortVersionString>1.7.9</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <description><![CDATA[<p>See git log v1.7.9 for changes.</p>]]></description>
+            <description><![CDATA[<p>Windows port preparation. See git log v1.7.9 for changes.</p>]]></description>
             <enclosure
                 url="https://flatpak.x2-pandora.de/cdripper/cdripper-1.7.9-macos-x86_64.dmg"
                 sparkle:version="1.7.9"
@@ -21,90 +36,6 @@
                 length="39162147"
                 type="application/octet-stream"
                 sparkle:edSignature="dVK0AiSL8/Bl+rt17Ye3uQqDefF3G0iqWXlEHu6+lksebE+lBCGDEnmFaCGdTCunm4QdsLoOpbW6O0mF7egiAw==" />
-        </item>
-        <item>
-            <title>Version 1.7.8</title>
-            <pubDate>Thu, 21 May 2026 09:07:17 +0200</pubDate>
-            <sparkle:version>1.7.8</sparkle:version>
-            <sparkle:shortVersionString>1.7.8</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <description><![CDATA[<p>See git log v1.7.8 for changes.</p>]]></description>
-            <enclosure
-                url="https://flatpak.x2-pandora.de/cdripper/cdripper-1.7.8-macos-x86_64.dmg"
-                sparkle:version="1.7.8"
-                sparkle:shortVersionString="1.7.8"
-                length="39162121"
-                type="application/octet-stream"
-                sparkle:edSignature="LccL/qKvw5c/pTuF7jgRLOhkrjne+egHf4R83J88YQmkEd4l16N/2RIgI9VO/YJFq2I+qwoY5A80qPnUv5xbAg==" />
-        </item>
-        <item>
-            <title>Version 1.7.7</title>
-            <pubDate>Thu, 21 May 2026 08:53:19 +0200</pubDate>
-            <sparkle:version>1.7.7</sparkle:version>
-            <sparkle:shortVersionString>1.7.7</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <description><![CDATA[<p>See git log v1.7.7 for changes.</p>]]></description>
-            <enclosure
-                url="https://flatpak.x2-pandora.de/cdripper/cdripper-1.7.7-macos-x86_64.dmg"
-                sparkle:version="1.7.7"
-                sparkle:shortVersionString="1.7.7"
-                length="39162010"
-                type="application/octet-stream"
-                sparkle:edSignature="6PyX+KOAN/jnCX9ftjvSRE6Xa8v2qmnqg4TJj8xNWLe/kRrChmhgOlk6rj4r+b9Nf3RX6OjXWGTKPHeFhtWpDA==" />
-        </item>
-        <item>
-            <title>Version 1.7.6</title>
-            <pubDate>Thu, 21 May 2026 08:46:54 +0200</pubDate>
-            <sparkle:version>1.7.6</sparkle:version>
-            <sparkle:shortVersionString>1.7.6</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <description><![CDATA[<p>See git log v1.7.6 for changes.</p>]]></description>
-            <enclosure
-                url="https://flatpak.x2-pandora.de/cdripper/cdripper-1.7.6-macos-x86_64.dmg"
-                sparkle:version="1.7.6"
-                sparkle:shortVersionString="1.7.6"
-                length="39162058"
-                type="application/octet-stream"
-                sparkle:edSignature="QvcbvriorVsKihzJklZ5nEXjvH3r54VKP3p1NcvV6xDMnmNiLRVmVVbMAOHlhbcsEqODkbSuGkZt2zdsqsnRCg==" />
-        </item>
-        <item>
-            <title>Version 1.7.5</title>
-            <pubDate>Thu, 21 May 2026 08:35:23 +0200</pubDate>
-            <sparkle:version>1.7.5</sparkle:version>
-            <sparkle:shortVersionString>1.7.5</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <description><![CDATA[<p>See git log v1.7.5 for changes.</p>]]></description>
-            <enclosure
-                url="https://flatpak.x2-pandora.de/cdripper/cdripper-1.7.5-macos-x86_64.dmg"
-                sparkle:version="1.7.5"
-                sparkle:shortVersionString="1.7.5"
-                length="39159879"
-                type="application/octet-stream"
-                sparkle:edSignature="3RPwA0O7oY+Lvv7/pf202ljCOQLKMbAs+xvIo7P9tthsNJP9RCax+Q5KC39Q9fVnh/PV28jaoSEr6WxNzmxVBA==" />
-        </item>
-
-        <item>
-            <title>Version 1.7.4</title>
-            <pubDate>Wed, 21 May 2026 06:35:00 +0000</pubDate>
-            <sparkle:version>1.7.4</sparkle:version>
-            <sparkle:shortVersionString>1.7.4</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <description><![CDATA[
-                <h2>1.7.4 — Mac native build verified</h2>
-                <ul>
-                    <li>First Mac release. CLI + GUI in one binary.</li>
-                    <li>Native eject + disc-status via libcdio (portable).</li>
-                    <li>All encoder tools bundled via Homebrew deps.</li>
-                    <li>Sparkle auto-update support.</li>
-                </ul>
-            ]]></description>
-            <enclosure
-                url="https://flatpak.x2-pandora.de/cdripper/cdripper-1.7.4-macos-x86_64.dmg"
-                sparkle:version="1.7.4"
-                sparkle:shortVersionString="1.7.4"
-                length="39159971"
-                type="application/octet-stream"
-                sparkle:edSignature="oQ229+3NKioO5USvmgcqBAmjxCBXUjpap3eE3nttmKCNvCv/H63NX59dLl2QY87n11QGg0m/soqdcT/jdv00Dw==" />
         </item>
     </channel>
 </rss>

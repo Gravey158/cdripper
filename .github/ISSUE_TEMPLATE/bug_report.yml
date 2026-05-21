@@ -1,0 +1,63 @@
+name: Bug report
+description: Reproducible problem — Rip-Fehler, Crash, falsche Metadaten, …
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Vorab: läuft `cdripper --version`? Wenn nein, bitte das zuerst klären
+        (Installation-Pfad in der README für deine Plattform).
+
+  - type: input
+    id: version
+    attributes:
+      label: cdripper-Version
+      placeholder: "1.7.9"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Plattform
+      options:
+        - Linux (Flatpak via flatpak.x2-pandora.de)
+        - Linux (selbst gebaut aus Quelle)
+        - macOS (Homebrew Cask)
+        - macOS (DMG direkt)
+        - macOS (selbst gebaut)
+        - Windows (MSI)
+        - Windows (selbst gebaut)
+    validations:
+      required: true
+
+  - type: input
+    id: drive
+    attributes:
+      label: Laufwerksmodell
+      description: Aus `cdripper --calibrate`-Output oder `cd-drive`-CLI.
+      placeholder: "ASUS DRW-24B3LT"
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: Was ist passiert?
+      description: Erwartetes Verhalten vs. tatsächliches Verhalten. Konkrete Disc-/Track-Namen helfen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduktion
+      description: Aufruf-Zeile + Schritte.
+      placeholder: |
+        cdripper --cli --once --device /dev/sr0 --config ~/.config/cdripper/config.ini
+        Bravo Hits Vol. 6 eingelegt → ...
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log-Auszug
+      description: Relevante Zeilen aus `~/.local/share/cdripper/cdripper.log` (Linux) bzw. dem Log-Tab in der GUI. Bitte WebDAV-Passwörter rausstreichen.
+      render: text

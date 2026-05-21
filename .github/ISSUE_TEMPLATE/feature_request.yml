@@ -1,0 +1,23 @@
+name: Feature request
+description: Idee, Erweiterung, neuer Workflow
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: Idee
+      description: Was soll cdripper können das es heute nicht kann?
+    validations:
+      required: true
+
+  - type: textarea
+    id: usecase
+    attributes:
+      label: Use-Case
+      description: Konkrete Situation in der das hilft. Edge-Cases?
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternativen / heutiger Workaround
+      description: Wie löst du das aktuell — oder warum geht's gar nicht?

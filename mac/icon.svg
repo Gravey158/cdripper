@@ -1,26 +1,81 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
   <defs>
+    <!-- Disc-Body: tiefer Blau-Gradient mit subtilem Holo-Shift -->
     <radialGradient id="discBody" cx="50%" cy="50%" r="55%">
-      <stop offset="0%" stop-color="#4fc3f7"/>
-      <stop offset="60%" stop-color="#2979ff"/>
-      <stop offset="100%" stop-color="#1f63d6"/>
+      <stop offset="0%"   stop-color="#4fc3f7"/>
+      <stop offset="55%"  stop-color="#2979ff"/>
+      <stop offset="100%" stop-color="#1a4ea8"/>
     </radialGradient>
-    <radialGradient id="shine" cx="35%" cy="30%" r="40%">
-      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.45"/>
+    <!-- Holo-Spectrum: lila/rosa Stippen wie auf echter CD -->
+    <radialGradient id="holo" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"   stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="40%"  stop-color="#ff5ad9" stop-opacity="0.08"/>
+      <stop offset="60%"  stop-color="#bb88ff" stop-opacity="0.10"/>
+      <stop offset="80%"  stop-color="#5ad9ff" stop-opacity="0.06"/>
       <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
     </radialGradient>
+    <!-- Specular Highlight: oben-links wie reflektierendes Licht -->
+    <radialGradient id="shine" cx="32%" cy="28%" r="38%">
+      <stop offset="0%"   stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="60%"  stop-color="#ffffff" stop-opacity="0.10"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <!-- Edge-Schatten: untere rechte Seite leicht dunkler -->
+    <radialGradient id="edgeShade" cx="70%" cy="72%" r="55%">
+      <stop offset="0%"   stop-color="#000000" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.35"/>
+    </radialGradient>
+    <!-- Hub-Innen: leicht abgedunkelter Plastik-Look -->
+    <linearGradient id="hub" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"   stop-color="#3a4252"/>
+      <stop offset="100%" stop-color="#1e2127"/>
+    </linearGradient>
+    <!-- Drop-Shadow als Filter -->
+    <filter id="dropShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="14" stdDeviation="22"
+                    flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
   </defs>
-  <!-- Outer disc -->
-  <circle cx="512" cy="512" r="480" fill="url(#discBody)"/>
-  <!-- Concentric rings (subtle grooves) -->
-  <circle cx="512" cy="512" r="430" fill="none" stroke="#ffffff" stroke-opacity="0.05" stroke-width="2"/>
-  <circle cx="512" cy="512" r="380" fill="none" stroke="#ffffff" stroke-opacity="0.05" stroke-width="2"/>
-  <circle cx="512" cy="512" r="320" fill="none" stroke="#ffffff" stroke-opacity="0.05" stroke-width="2"/>
-  <circle cx="512" cy="512" r="260" fill="none" stroke="#ffffff" stroke-opacity="0.05" stroke-width="2"/>
-  <!-- Shine highlight -->
-  <circle cx="512" cy="512" r="480" fill="url(#shine)"/>
-  <!-- Inner hub area -->
-  <circle cx="512" cy="512" r="240" fill="#262b33"/>
-  <!-- Center hole -->
-  <circle cx="512" cy="512" r="80" fill="#1e2127"/>
+
+  <g filter="url(#dropShadow)">
+    <!-- Outer disc body -->
+    <circle cx="512" cy="512" r="480" fill="url(#discBody)"/>
+
+    <!-- Holo-Spectrum-Layer -->
+    <circle cx="512" cy="512" r="480" fill="url(#holo)"/>
+
+    <!-- Konzentrische Rillen (Audio-Track-Andeutung) -->
+    <g fill="none" stroke="#ffffff" stroke-opacity="0.045" stroke-width="1.5">
+      <circle cx="512" cy="512" r="445"/>
+      <circle cx="512" cy="512" r="420"/>
+      <circle cx="512" cy="512" r="395"/>
+      <circle cx="512" cy="512" r="370"/>
+      <circle cx="512" cy="512" r="345"/>
+      <circle cx="512" cy="512" r="320"/>
+      <circle cx="512" cy="512" r="295"/>
+      <circle cx="512" cy="512" r="270"/>
+      <circle cx="512" cy="512" r="247"/>
+    </g>
+
+    <!-- Edge-Shade (untere rechte Hälfte minimal dunkler) -->
+    <circle cx="512" cy="512" r="480" fill="url(#edgeShade)"/>
+
+    <!-- Specular shine top-left -->
+    <circle cx="512" cy="512" r="480" fill="url(#shine)"/>
+
+    <!-- Hub-Bereich (Plastik-Mitte) -->
+    <circle cx="512" cy="512" r="230" fill="url(#hub)"/>
+    <!-- Hub-Rand-Highlight -->
+    <circle cx="512" cy="512" r="230" fill="none"
+            stroke="#ffffff" stroke-opacity="0.10" stroke-width="2"/>
+
+    <!-- Innen-Ring (Klemmpunkt der Disc) -->
+    <circle cx="512" cy="512" r="135" fill="none"
+            stroke="#0f1217" stroke-width="3" stroke-opacity="0.55"/>
+
+    <!-- Center hole -->
+    <circle cx="512" cy="512" r="75" fill="#0a0c10"/>
+    <circle cx="512" cy="512" r="75" fill="none"
+            stroke="#ffffff" stroke-opacity="0.18" stroke-width="2"/>
+  </g>
 </svg>

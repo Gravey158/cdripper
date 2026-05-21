@@ -1,6 +1,6 @@
 cask "cdripper" do
-  version "1.7.9"
-  sha256 "247af477044627ca5006d1e29ee1b092f3331b189b9a26f752182d500fb61170"
+  version "1.7.10"
+  sha256 "f1771d0879dbc4dff7fd85334c9bc2277ae1bddd5aabd2d0e5a3336ff9d0081b"
 
   url "https://flatpak.x2-pandora.de/cdripper/cdripper-#{version}-macos-x86_64.dmg"
   name "CD Ripper"

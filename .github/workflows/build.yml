@@ -1,0 +1,117 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # ── Linux: Flatpak via flatpak-builder ─────────────────────────────────────
+  linux-flatpak:
+    runs-on: ubuntu-latest
+    container:
+      image: bilelmoussaoui/flatpak-github-actions:kde-6.7
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Flatpak
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: cdripper.flatpak
+          manifest-path: flatpak/io.github.gravey158.cdripper.yml
+          # Cache der gebauten Module zwischen Runs — spart ~10 Min beim
+          # Re-Build wenn nur cdripper sich geändert hat.
+          cache-key: flatpak-builder-${{ github.sha }}
+          restore-cache-key: flatpak-builder-
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cdripper-linux-flatpak
+          path: cdripper.flatpak
+          retention-days: 30
+
+  # ── macOS: native .app + .dmg ──────────────────────────────────────────────
+  # macos-13 = Intel x86_64 (matched current Mac-Build-Erwartung). Apple
+  # Silicon-Variante (macos-14/arm64) als separater Matrix-Job folgt sobald
+  # der ARM-Build-Pfad verifiziert ist (universal binary vs. zwei DMGs).
+  macos:
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Homebrew deps
+        run: |
+          brew update
+          brew install cmake pkg-config libcdio libcdio-paranoia libdiscid \
+                       nlohmann-json qt@6 flac opus-tools lame taglib \
+                       libebur128 fmt inih chromaprint ffmpeg curl librsvg
+
+      - name: Build .app + .dmg
+        run: ./scripts/build-mac.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cdripper-macos-x86_64
+          path: build-mac/cdripper-*-macos-x86_64.dmg
+          retention-days: 30
+
+  # ── Windows: vcpkg + MSVC + WiX MSI ────────────────────────────────────────
+  # Sobald die VM-basierte Erstvalidierung durch ist (siehe windows/SETUP.md),
+  # kann dieser Job auf jedem Push den Build verifizieren. vcpkg-Erstbau
+  # dauert ~30–60 Min, danach via GHA-Cache <5 Min. Initial deshalb auf
+  # workflow_dispatch oder Tag-Push eingeschränkt — bei jedem Main-Push
+  # wäre der Cache-Miss-Erstbau zu teuer.
+  windows:
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: lukka/get-cmake@latest
+
+      - name: vcpkg bootstrap + deps
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: '2024.12.16'   # bumpbar je nach Bedarf
+          runVcpkgInstall: true
+
+      - name: WiX 6 install
+        run: dotnet tool install --global wix
+
+      - name: Build cdripper.exe
+        shell: pwsh
+        run: ./scripts/build-windows.ps1
+
+      - name: Build .msi
+        shell: pwsh
+        run: ./scripts/build-msi.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cdripper-windows-x64
+          path: build-windows/cdripper-*-windows-x64.msi
+          retention-days: 30
+
+  # ── GitHub Release: bei Tag automatisch erstellen ──────────────────────────
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux-flatpak, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/cdripper-linux-flatpak/*.flatpak
+            artifacts/cdripper-macos-x86_64/*.dmg
+            artifacts/cdripper-windows-x64/*.msi
+          generate_release_notes: true
+          fail_on_unmatched_files: false
