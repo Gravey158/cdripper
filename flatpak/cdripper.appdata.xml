@@ -26,6 +26,11 @@
   <developer_name>Dennis</developer_name>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="1.7.3" date="2026-05-21">
+      <description>
+        <p>Flatpak adds Chromaprint (fpcalc) for AcoustID audio fingerprinting fallback.</p>
+      </description>
+    </release>
     <release version="1.7.2" date="2026-05-21">
       <description>
         <p>Flatpak feature-parity: opusenc, lame, rsgain bundled — MP3/Opus profiles and ReplayGain calculation now work in Flatpak.</p>

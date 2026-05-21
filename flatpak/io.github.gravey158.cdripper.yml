@@ -249,6 +249,27 @@ modules:
         url: https://github.com/complexlogic/rsgain.git
         tag: v3.5.1
 
+  # Chromaprint: liefert das `fpcalc`-CLI für AcoustID-Audio-Fingerprinting.
+  # engine.cpp ruft `fpcalc -json <flac>` für die letzte Metadaten-Fallback-
+  # Stufe (Klang-basierte Identifikation, wenn MB-CD-Stub + CDDB + manuelle
+  # Suche nichts liefern). Verwendet ffmpeg (libavcodec/libavformat) aus
+  # der KDE-Platform-Runtime — kein FFTW-Eigenbau nötig.
+  - name: chromaprint
+    buildsystem: cmake-ninja
+    # v1.5.1 ist NICHT mit ffmpeg 6+/7+ kompatibel (avcodec_decode_audio4
+    # entfernt, libavresample tot). Master hat den FFmpeg 8.0-Fix
+    # (PR #154 + Folge-Patches). Pin auf HEAD-Commit statt Tag, weil
+    # 1.6.0 noch nicht released ist.
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DBUILD_SHARED_LIBS=ON
+      - -DBUILD_TOOLS=ON
+      - -DBUILD_TESTS=OFF
+    sources:
+      - type: git
+        url: https://github.com/acoustid/chromaprint.git
+        commit: 6b13ce3a81ae931e7477c4856a86bece99157cd8
+
   # cdripper selbst. Quelle = Repo-Wurzel (../).
   - name: cdripper
     buildsystem: cmake-ninja

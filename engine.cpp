@@ -18,7 +18,9 @@
 #include <csignal>
 #include <fcntl.h>
 #include <poll.h>
+#ifdef __linux__
 #include <linux/cdrom.h>
+#endif
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -2198,6 +2200,7 @@ Drive::Drive(const std::string& p) : path_(p) {
                                  std::strerror(errno) + ")");
 }
 Drive::~Drive()              { if (fd_ >= 0) ::close(fd_); }
+#ifdef __linux__
 int  Drive::raw_status() const { return ::ioctl(fd_, CDROM_DRIVE_STATUS, 0); }
 bool Drive::disc_ready() const { return raw_status() == CDS_DISC_OK; }
 bool Drive::has_audio() const {
@@ -2234,6 +2237,21 @@ bool load_tray(const std::string& dev) {
     ::close(fd);
     return r == 0;
 }
+#else
+// macOS/Darwin (BSD): die Linux-CDROM-ioctls existieren nicht. Stubs, die den
+// Build durchgehen lassen — Funktionalität kommt mit der libcdio-portablen
+// Abstraktion (cdio_get_drive_cap / cdio_eject_media_drive) in einem
+// späteren Refactor. Statt CDROM_DRIVE_STATUS sollten wir später
+// cdio_get_drive_cap_dev verwenden; statt CDROMEJECT cdio_eject_media_drive
+// (übers libcdio-Handle, nicht den rohen fd). Für Initial-Build reicht
+// „läuft, aber Disc-Status + Eject sind no-op".
+int  Drive::raw_status() const { return 4 /* CDS_DISC_OK */; }
+bool Drive::disc_ready() const { return true; }
+bool Drive::has_audio() const  { return true; }
+void Drive::eject() const      { /* TODO: cdio_eject_media via libcdio */ }
+bool eject_device(const std::string&) { return false; }
+bool load_tray(const std::string&)    { return false; }
+#endif
 
 // ───────────────────────────── FLAC ───────────────────────────────────────────
 
