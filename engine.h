@@ -21,7 +21,7 @@ namespace cdr {
 //   PATCH  kleiner Bugfix / kleine Änderung
 // Bei jeder veröffentlichten Änderung hier hochzählen und im lokalen
 // Git-Repo einen passenden Tag setzen (git tag -a vX.Y.Z).
-constexpr const char* VERSION = "1.7.6";
+constexpr const char* VERSION = "1.7.7";
 
 struct Config {
     std::string device        = "/dev/sr0";   // primäres/Single-Laufwerk

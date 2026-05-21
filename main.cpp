@@ -109,7 +109,14 @@ int main(int argc, char** argv) {
     }
 
 #ifdef HAVE_QT
+    // Mac und Windows haben kein DISPLAY/WAYLAND_DISPLAY — auf APPLE/_WIN32
+    // ist der Window-Server immer da. Auf Linux ist die Env-Variable die
+    // zuverlässige Disambiguierung GUI-Session vs. SSH/Headless.
+#if defined(__APPLE__) || defined(_WIN32)
+    bool have_display = true;
+#else
     bool have_display = std::getenv("DISPLAY") || std::getenv("WAYLAND_DISPLAY");
+#endif
     if (!force_cli && (force_gui || have_display)) {
         QApplication app(argc, argv);
         app.setApplicationName("CD Ripper");
