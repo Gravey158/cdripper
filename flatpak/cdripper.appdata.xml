@@ -26,6 +26,11 @@
   <developer_name>Dennis</developer_name>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="1.7.6" date="2026-05-21">
+      <description>
+        <p>Cross-platform WorkerSession refactor — Mac rip path now works (self_exe_path fixes /proc/self/exe-on-Mac bug); Windows skeleton stubs in place.</p>
+      </description>
+    </release>
     <release version="1.7.5" date="2026-05-21">
       <description>
         <p>Mac full stack: libcdio-based eject + disc-status, .app bundle, .dmg packaging, Sparkle auto-update, Homebrew Cask formula.</p>

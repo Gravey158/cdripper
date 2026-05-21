@@ -21,7 +21,7 @@ namespace cdr {
 //   PATCH  kleiner Bugfix / kleine Änderung
 // Bei jeder veröffentlichten Änderung hier hochzählen und im lokalen
 // Git-Repo einen passenden Tag setzen (git tag -a vX.Y.Z).
-constexpr const char* VERSION = "1.7.5";
+constexpr const char* VERSION = "1.7.6";
 
 struct Config {
     std::string device        = "/dev/sr0";   // primäres/Single-Laufwerk
@@ -341,6 +341,45 @@ std::vector<ArMatch> ar_lookup(
     const ArIds& ids,
     const std::vector<std::pair<uint32_t, uint32_t>>& crcs,
     const std::string& ua);
+
+// ── Plattform-Abstraktion: Subprozess-Worker ──────────────────────────────────
+// cdripper startet sich selbst als Worker-Subprozess via `--rip-worker`/
+// `--probe-worker` (siehe main.cpp). WorkerSession kapselt fork+exec+pipe+
+// poll auf POSIX bzw. CreateProcess+CreatePipe+ReadFile auf Windows (Stubs
+// in v1.7.6, voll-implementiert sobald wir nativ auf Windows bauen).
+//
+// Lifecycle: ctor spawnt das Kind; spawned() prüft Erfolg; read_line()
+// liefert die nächste vollständige Zeile aus stdout (oder leer = Timeout,
+// nullopt = EOF). kill() killt das Kind hart; wait_exit() reaped + liefert
+// Exit-Code (0..255), -1 bei Signal/Abnormal/Wait-Fehler.
+class WorkerSession {
+public:
+    WorkerSession(const std::string& self_exe,
+                  const std::vector<std::string>& args);
+    ~WorkerSession();
+    WorkerSession(const WorkerSession&) = delete;
+    WorkerSession& operator=(const WorkerSession&) = delete;
+
+    bool spawned() const { return spawned_; }
+    std::optional<std::string> read_line(int timeout_ms);
+    void kill();
+    int  wait_exit();
+private:
+#ifdef _WIN32
+    void* h_process_ = nullptr;
+    void* h_stdout_ = nullptr;
+#else
+    int pid_ = -1;
+    int fd_  = -1;
+#endif
+    std::string buf_;
+    bool spawned_ = false;
+};
+
+// Absoluter Pfad des laufenden Binaries — Linux: /proc/self/exe (immer
+// gültig nach chdir); Mac: _NSGetExecutablePath + realpath; Windows:
+// GetModuleFileNameW. Leerer String bei Fehler.
+std::string self_exe_path();
 
 // Laufwerksklappe / Disc-Erkennung (ioctl).
 class Drive {

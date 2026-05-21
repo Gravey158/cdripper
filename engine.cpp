@@ -314,157 +314,240 @@ bool save_config(const Config& c, const std::string& path) {
     return true;
 }
 
+// ── WorkerSession-Plattform-Impl ──────────────────────────────────────────────
+// Kapselt fork+exec+pipe+poll (POSIX) bzw. CreateProcess+CreatePipe+ReadFile
+// (Windows-Stub bis nativ gebaut). rip_session/probe_session/etc. nutzen das
+// statt direkt Plattform-APIs zu rufen — Mac/Linux/Windows-Pfade konvergieren.
+
+#ifdef __APPLE__
+#  include <mach-o/dyld.h>
+#  include <sys/param.h>
+#endif
+#ifdef _WIN32
+#  include <windows.h>
+#endif
+
+std::string self_exe_path() {
+#ifdef _WIN32
+    wchar_t buf[MAX_PATH];
+    DWORD n = ::GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    if (n == 0 || n == MAX_PATH) return {};
+    int sz = ::WideCharToMultiByte(CP_UTF8, 0, buf, (int)n, nullptr, 0,
+                                   nullptr, nullptr);
+    std::string out((size_t)sz, '\0');
+    ::WideCharToMultiByte(CP_UTF8, 0, buf, (int)n, out.data(), sz,
+                          nullptr, nullptr);
+    return out;
+#elif defined(__APPLE__)
+    char raw[4096];
+    uint32_t sz = sizeof raw;
+    if (_NSGetExecutablePath(raw, &sz) != 0) return {};
+    char real[MAXPATHLEN];
+    if (!::realpath(raw, real)) return raw;
+    return real;
+#else
+    // Linux: /proc/self/exe symlinkt aufs aktuell laufende Binary, auch nach
+    // chdir/rename. Robuste Variante mit Größenwachstum bis das readlink
+    // passt.
+    std::vector<char> buf(4096);
+    for (int i = 0; i < 4; ++i) {
+        ssize_t n = ::readlink("/proc/self/exe", buf.data(), buf.size());
+        if (n < 0) return {};
+        if ((size_t)n < buf.size()) return std::string(buf.data(), (size_t)n);
+        buf.resize(buf.size() * 2);
+    }
+    return {};
+#endif
+}
+
+#ifndef _WIN32
+// POSIX-Implementierung
+WorkerSession::WorkerSession(const std::string& self_exe,
+                             const std::vector<std::string>& args) {
+    int pf[2];
+    if (::pipe(pf) != 0) return;
+    pid_t pid = ::fork();
+    if (pid < 0) { ::close(pf[0]); ::close(pf[1]); return; }
+    if (pid == 0) {
+        ::dup2(pf[1], STDOUT_FILENO);
+        ::close(pf[0]); ::close(pf[1]);
+        std::vector<char*> argv;
+        argv.reserve(args.size() + 2);
+        argv.push_back(const_cast<char*>(self_exe.c_str()));
+        for (const auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
+        argv.push_back(nullptr);
+        ::execv(self_exe.c_str(), argv.data());
+        _exit(127);
+    }
+    ::close(pf[1]);
+    pid_ = pid;
+    fd_  = pf[0];
+    spawned_ = true;
+}
+
+WorkerSession::~WorkerSession() {
+    if (fd_ >= 0) ::close(fd_);
+    if (pid_ > 0) ::waitpid(pid_, nullptr, WNOHANG); // best-effort reap
+}
+
+std::optional<std::string> WorkerSession::read_line(int timeout_ms) {
+    auto nl = buf_.find('\n');
+    if (nl != std::string::npos) {
+        std::string ln = buf_.substr(0, nl);
+        buf_.erase(0, nl + 1);
+        return ln;
+    }
+    if (fd_ < 0) return std::nullopt;
+    struct pollfd p { fd_, POLLIN, 0 };
+    int pr = ::poll(&p, 1, timeout_ms);
+    if (pr > 0) {
+        char t[8192];
+        ssize_t k = ::read(fd_, t, sizeof t);
+        if (k > 0) {
+            buf_.append(t, (size_t)k);
+            nl = buf_.find('\n');
+            if (nl != std::string::npos) {
+                std::string ln = buf_.substr(0, nl);
+                buf_.erase(0, nl + 1);
+                return ln;
+            }
+            return std::string{};           // partial, treat as timeout-ish
+        }
+        if (k == 0) return std::nullopt;    // EOF
+        return std::nullopt;                // read error
+    }
+    if (pr == 0) return std::string{};      // timeout
+    return std::nullopt;                    // poll error
+}
+
+void WorkerSession::kill() {
+    if (pid_ > 0) ::kill(pid_, SIGKILL);
+}
+
+int WorkerSession::wait_exit() {
+    if (pid_ <= 0) return -1;
+    int st = 0;
+    for (int i = 0; i < 50; ++i) {
+        pid_t r = ::waitpid(pid_, &st, WNOHANG);
+        if (r == pid_) {
+            pid_ = -1;
+            return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+        }
+        if (r < 0) { pid_ = -1; return -1; }
+        ::usleep(100 * 1000);
+    }
+    return -1;
+}
+#else
+// Windows-Stubs — voll-implementiert wenn wir cdripper nativ auf Windows
+// bauen (CreateProcessW + CreatePipe + STARTUPINFOEX(stdout-Pipe-Write) +
+// PeekNamedPipe für non-blocking read + WaitForSingleObject(handle, ms) +
+// GetExitCodeProcess). Bis dahin liefern Stubs ein nicht-spawnedes Session-
+// Objekt, das spawned()==false meldet — Aufrufer fällt auf RipResult::Fatal
+// zurück (selbe Semantik wie pipe()-Fehler auf POSIX).
+WorkerSession::WorkerSession(const std::string&, const std::vector<std::string>&) {}
+WorkerSession::~WorkerSession() {}
+std::optional<std::string> WorkerSession::read_line(int) { return std::nullopt; }
+void WorkerSession::kill() {}
+int  WorkerSession::wait_exit() { return -1; }
+#endif
+
 // ── Rip-Session: Worker-Subprozess + Watchdog ──────────────────────────────────
+// Loop-Logik (Stall-Timer, Per-Track-Budget, Stop-Callback, Event-Parsing)
+// lebt hier; das Spawn/Read/Kill/Wait-Plumbing in WorkerSession.
 
 RipResult rip_session(const std::string& device, const std::string& workdir,
                       int speed, bool fast, int stall_secs,
                       const std::function<void(const std::string&)>& onEvent,
                       const std::function<bool()>& stop,
                       const std::string& plan_csv, int track_budget_secs) {
-    int pf[2];
-    if (::pipe(pf) != 0) return RipResult::Fatal;
-    std::string defcsv = plan_csv.empty() ? "-" : plan_csv;
-    pid_t pid = ::fork();
-    if (pid < 0) { ::close(pf[0]); ::close(pf[1]); return RipResult::Fatal; }
-    if (pid == 0) {
-        ::dup2(pf[1], STDOUT_FILENO);
-        ::close(pf[0]); ::close(pf[1]);
-        std::string sp = std::to_string(speed);
-        ::execl("/proc/self/exe", "cdripper", "--rip-worker",
-                device.c_str(), workdir.c_str(), sp.c_str(),
-                fast ? "1" : "0", defcsv.c_str(), (char*)nullptr);
-        _exit(127);
-    }
-    ::close(pf[1]);
-    int fd = pf[0];
-    std::string buf;
+    std::string self = self_exe_path();
+    if (self.empty()) return RipResult::Fatal;
+    WorkerSession sess(self, {
+        "--rip-worker", device, workdir, std::to_string(speed),
+        fast ? "1" : "0", plan_csv.empty() ? "-" : plan_csv
+    });
+    if (!sess.spawned()) return RipResult::Fatal;
+
     std::time_t last = std::time(nullptr);
-    std::time_t trkStart = 0;                 // 0 = gerade kein Track aktiv
+    std::time_t trkStart = 0;
     RipResult res = RipResult::Ok;
     bool sawFatal = false;
     for (;;) {
-        if (stop && stop()) { ::kill(pid, SIGKILL);
-                              res = RipResult::Aborted; break; }
-        // Per-Track-Zeitbudget: ein einzelner Track der trotz Fortschritt
-        // (Stall-Watchdog greift dann NICHT) endlos grindet → wie Hänger
-        // behandeln, damit Skip-ahead mit dem Rest weitermacht.
+        if (stop && stop()) { sess.kill(); res = RipResult::Aborted; break; }
+        // Per-Track-Zeitbudget: Track der trotz Fortschritt (Stall-Watchdog
+        // greift dann NICHT) endlos grindet → wie Hänger behandeln.
         if (track_budget_secs > 0 && trkStart &&
             std::time(nullptr) - trkStart > track_budget_secs) {
-            ::kill(pid, SIGKILL);
+            sess.kill();
             res = RipResult::Stalled;
             break;
         }
-        struct pollfd p { fd, POLLIN, 0 };
-        int pr = ::poll(&p, 1, 1000);
-        if (pr > 0) {
-            char t[8192];
-            ssize_t k = ::read(fd, t, sizeof t);
-            if (k > 0) {
-                buf.append(t, (size_t)k);
-                last = std::time(nullptr);
-                size_t nl;
-                while ((nl = buf.find('\n')) != std::string::npos) {
-                    std::string ln = buf.substr(0, nl);
-                    buf.erase(0, nl + 1);
-                    if (ln.rfind("FATAL", 0) == 0) sawFatal = true;
-                    if (ln.rfind("RIPSTART ", 0) == 0)
-                        trkStart = std::time(nullptr);
-                    else if (ln.rfind("RIPDONE ", 0) == 0 ||
-                             ln.rfind("RIPERR ", 0) == 0)
-                        trkStart = 0;
-                    if (onEvent) onEvent(ln);
-                }
-            } else if (k == 0) {
-                break;                       // EOF — Worker fertig
-            }
-        } else if (pr == 0) {
+        auto line = sess.read_line(1000);
+        if (!line.has_value()) break;       // EOF — Worker fertig
+        if (line->empty()) {                // timeout
             if (std::time(nullptr) - last > stall_secs) {
-                ::kill(pid, SIGKILL);
+                sess.kill();
                 res = RipResult::Stalled;
                 break;
             }
+            continue;
         }
+        last = std::time(nullptr);
+        const std::string& ln = *line;
+        if (ln.rfind("FATAL", 0) == 0) sawFatal = true;
+        if (ln.rfind("RIPSTART ", 0) == 0)
+            trkStart = std::time(nullptr);
+        else if (ln.rfind("RIPDONE ", 0) == 0 ||
+                 ln.rfind("RIPERR ",  0) == 0)
+            trkStart = 0;
+        if (onEvent) onEvent(ln);
     }
-    ::close(fd);
-    int st = 0;
-    for (int i = 0; i < 50; ++i) {           // nicht ewig auf D-State warten
-        pid_t r = ::waitpid(pid, &st, WNOHANG);
-        if (r == pid || r < 0) break;
-        ::usleep(100000);
-    }
+    int ec = sess.wait_exit();
     if (res == RipResult::Ok) {
         if (sawFatal) res = RipResult::Fatal;
-        else if (WIFEXITED(st) && WEXITSTATUS(st) != 0 &&
-                 WEXITSTATUS(st) != 2) res = RipResult::Fatal;
+        else if (ec > 0 && ec != 2) res = RipResult::Fatal;
     }
     return res;
 }
 
-// Bewusst eine eigene, schlanke Kopie der rip_session-Watchdog-Plumbing
-// statt die produktiv-bewährte rip_session zu refactoren (Risiko-Minimierung;
-// die Poll/Stall/D-State-Logik ist identisch, nur das exec-Argv differiert).
+// Probe-Session: gleiches Pattern, anderes Worker-Argv, kein Track-Budget.
 RipResult probe_session(const std::string& device, int stall_secs,
                          const std::function<void(const std::string&)>& onEvent,
                          const std::function<bool()>& stop,
                          int start_track, int density) {
-    int pf[2];
-    if (::pipe(pf) != 0) return RipResult::Fatal;
-    std::string sst = std::to_string(start_track < 1 ? 1 : start_track);
-    std::string sden = std::to_string(density < 1 ? 6 : density);
-    pid_t pid = ::fork();
-    if (pid < 0) { ::close(pf[0]); ::close(pf[1]); return RipResult::Fatal; }
-    if (pid == 0) {
-        ::dup2(pf[1], STDOUT_FILENO);
-        ::close(pf[0]); ::close(pf[1]);
-        ::execl("/proc/self/exe", "cdripper", "--probe-worker",
-                device.c_str(), sst.c_str(), sden.c_str(), (char*)nullptr);
-        _exit(127);
-    }
-    ::close(pf[1]);
-    int fd = pf[0];
-    std::string buf;
+    std::string self = self_exe_path();
+    if (self.empty()) return RipResult::Fatal;
+    WorkerSession sess(self, {
+        "--probe-worker", device,
+        std::to_string(start_track < 1 ? 1 : start_track),
+        std::to_string(density < 1 ? 6 : density)
+    });
+    if (!sess.spawned()) return RipResult::Fatal;
+
     std::time_t last = std::time(nullptr);
     RipResult res = RipResult::Ok;
     bool sawFatal = false;
     for (;;) {
-        if (stop && stop()) { ::kill(pid, SIGKILL);
-                              res = RipResult::Aborted; break; }
-        struct pollfd p { fd, POLLIN, 0 };
-        int pr = ::poll(&p, 1, 1000);
-        if (pr > 0) {
-            char t[8192];
-            ssize_t k = ::read(fd, t, sizeof t);
-            if (k > 0) {
-                buf.append(t, (size_t)k);
-                last = std::time(nullptr);
-                size_t nl;
-                while ((nl = buf.find('\n')) != std::string::npos) {
-                    std::string ln = buf.substr(0, nl);
-                    buf.erase(0, nl + 1);
-                    if (ln.rfind("FATAL", 0) == 0) sawFatal = true;
-                    if (onEvent) onEvent(ln);
-                }
-            } else if (k == 0) {
-                break;
-            }
-        } else if (pr == 0) {
+        if (stop && stop()) { sess.kill(); res = RipResult::Aborted; break; }
+        auto line = sess.read_line(1000);
+        if (!line.has_value()) break;
+        if (line->empty()) {
             if (std::time(nullptr) - last > stall_secs) {
-                ::kill(pid, SIGKILL);
+                sess.kill();
                 res = RipResult::Stalled;
                 break;
             }
+            continue;
         }
+        last = std::time(nullptr);
+        if (line->rfind("FATAL", 0) == 0) sawFatal = true;
+        if (onEvent) onEvent(*line);
     }
-    ::close(fd);
-    int st = 0;
-    for (int i = 0; i < 50; ++i) {
-        pid_t r = ::waitpid(pid, &st, WNOHANG);
-        if (r == pid || r < 0) break;
-        ::usleep(100000);
-    }
+    int ec = sess.wait_exit();
     if (res == RipResult::Ok) {
         if (sawFatal) res = RipResult::Fatal;
-        else if (WIFEXITED(st) && WEXITSTATUS(st) != 0) res = RipResult::Fatal;
+        else if (ec > 0) res = RipResult::Fatal;
     }
     return res;
 }
