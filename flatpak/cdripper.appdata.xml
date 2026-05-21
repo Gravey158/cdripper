@@ -26,6 +26,11 @@
   <developer_name>Dennis</developer_name>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="1.7.2" date="2026-05-21">
+      <description>
+        <p>Flatpak feature-parity: opusenc, lame, rsgain bundled — MP3/Opus profiles and ReplayGain calculation now work in Flatpak.</p>
+      </description>
+    </release>
     <release version="1.7.1" date="2026-05-20">
       <description>
         <p>Flatpak packaging shipping (Wave 0b): cross-distro install works on Fedora + Debian via KDE Platform 6.7 runtime.</p>

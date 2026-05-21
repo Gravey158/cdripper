@@ -131,6 +131,124 @@ modules:
         url: https://github.com/xiph/flac.git
         tag: 1.4.3
 
+  # Opus-Stack: libogg → libopus → libopusenc → opus-tools (liefert opusenc CLI).
+  - name: libogg
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DBUILD_SHARED_LIBS=ON
+      - -DBUILD_TESTING=OFF
+      - -DINSTALL_DOCS=OFF
+    sources:
+      - type: git
+        url: https://github.com/xiph/ogg.git
+        tag: v1.3.5
+
+  - name: libopus
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DBUILD_SHARED_LIBS=ON
+      - -DBUILD_TESTING=OFF
+      - -DOPUS_BUILD_PROGRAMS=OFF
+    sources:
+      - type: git
+        url: https://github.com/xiph/opus.git
+        tag: v1.5.2
+
+  - name: libopusenc
+    buildsystem: autotools
+    config-opts:
+      - --disable-static
+      - --disable-examples
+      - --disable-doc
+    sources:
+      - type: git
+        url: https://github.com/xiph/libopusenc.git
+        tag: v0.2.1
+
+  - name: opus-tools
+    buildsystem: autotools
+    config-opts:
+      - --disable-static
+    sources:
+      - type: git
+        url: https://github.com/xiph/opus-tools.git
+        tag: v0.2
+
+  # LAME: MP3-Encoder. Github-Mirror weil sourceforge keine git-Tags
+  # standardisiert exponiert.
+  - name: lame
+    buildsystem: simple
+    # Frontend (`lame` CLI) braucht termcap-Symbole (`tgetstr`). Modernes
+    # ncurses splittet die in libtinfo — explizit zu LDFLAGS hinzufügen.
+    build-commands:
+      - ./configure --prefix=/app --libdir=/app/lib --disable-static LDFLAGS="-ltinfo"
+      - make -j$(nproc)
+      - make install
+    sources:
+      - type: archive
+        url: https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz
+        sha256: ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e
+
+  # TagLib: rsgain liest/schreibt Tags damit. Build-Dep für rsgain.
+  - name: taglib
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DBUILD_SHARED_LIBS=ON
+      - -DBUILD_TESTING=OFF
+      - -DBUILD_EXAMPLES=OFF
+    sources:
+      - type: git
+        url: https://github.com/taglib/taglib.git
+        tag: v2.0.2
+
+  # libebur128: EBU R128 Loudness-Algorithmus. Build-Dep für rsgain.
+  - name: libebur128
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DBUILD_SHARED_LIBS=ON
+      - -DENABLE_INTERNAL_QUEUE_H=ON
+    sources:
+      - type: git
+        url: https://github.com/jiixyj/libebur128.git
+        tag: v1.2.6
+
+  # fmt: C++ Formatting-Library, Build-Dep für rsgain.
+  - name: fmt
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DBUILD_SHARED_LIBS=ON
+      - -DFMT_TEST=OFF
+      - -DFMT_DOC=OFF
+    sources:
+      - type: git
+        url: https://github.com/fmtlib/fmt.git
+        tag: 10.2.1
+
+  # inih: kleiner INI-Parser, Build-Dep für rsgain (Config-File-Reader).
+  - name: inih
+    buildsystem: meson
+    config-opts:
+      - -Ddefault_library=shared
+      - -Ddistro_install=true
+    sources:
+      - type: git
+        url: https://github.com/benhoyt/inih.git
+        tag: r58
+
+  # rsgain: ReplayGain 2.0 + EBU R128 für FLAC/Opus/MP3. cdripper-Pipeline
+  # ruft `rsgain easy <dir>` nach jedem Album-Rip. Hängt von ffmpeg
+  # (libavcodec/format) — wenn die KDE-Platform-Runtime kein ffmpeg
+  # mitbringt, scheitert dieses Modul; dann fällt v1.7.2 auf rsgain-skip
+  # zurück (Tag-Schreiben weiterhin durch metaflac).
+  - name: rsgain
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+    sources:
+      - type: git
+        url: https://github.com/complexlogic/rsgain.git
+        tag: v3.5.1
+
   # cdripper selbst. Quelle = Repo-Wurzel (../).
   - name: cdripper
     buildsystem: cmake-ninja
