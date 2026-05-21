@@ -2238,19 +2238,43 @@ bool load_tray(const std::string& dev) {
     return r == 0;
 }
 #else
-// macOS/Darwin (BSD): die Linux-CDROM-ioctls existieren nicht. Stubs, die den
-// Build durchgehen lassen — Funktionalität kommt mit der libcdio-portablen
-// Abstraktion (cdio_get_drive_cap / cdio_eject_media_drive) in einem
-// späteren Refactor. Statt CDROM_DRIVE_STATUS sollten wir später
-// cdio_get_drive_cap_dev verwenden; statt CDROMEJECT cdio_eject_media_drive
-// (übers libcdio-Handle, nicht den rohen fd). Für Initial-Build reicht
-// „läuft, aber Disc-Status + Eject sind no-op".
-int  Drive::raw_status() const { return 4 /* CDS_DISC_OK */; }
-bool Drive::disc_ready() const { return true; }
-bool Drive::has_audio() const  { return true; }
-void Drive::eject() const      { /* TODO: cdio_eject_media via libcdio */ }
-bool eject_device(const std::string&) { return false; }
-bool load_tray(const std::string&)    { return false; }
+// macOS/Darwin (BSD): keine Linux-CDROM-ioctls. Funktional äquivalent via
+// libcdio's portabler API — cdio_eject_media_drive / cdio_close_tray für
+// die Klappe, cdio_open + Track-Enumeration für Disc-Präsenz und
+// Audio-Erkennung. Etwas langsamer als die Linux-ioctls (jeder Status-
+// Check öffnet+schließt das Device), aber funktional korrekt — und gut
+// genug für Mac-typische geringe Poll-Frequenz.
+bool Drive::disc_ready() const {
+    CdIo_t* c = cdio_open(path_.c_str(), DRIVER_DEVICE);
+    if (!c) return false;
+    track_t n = cdio_get_num_tracks(c);
+    cdio_destroy(c);
+    return n != CDIO_INVALID_TRACK && n > 0;
+}
+bool Drive::has_audio() const {
+    CdIo_t* c = cdio_open(path_.c_str(), DRIVER_DEVICE);
+    if (!c) return false;
+    track_t n = cdio_get_num_tracks(c);
+    bool audio = false;
+    if (n != CDIO_INVALID_TRACK) {
+        for (track_t i = 1; i <= n; ++i) {
+            if (cdio_get_track_format(c, i) == TRACK_FORMAT_AUDIO) { audio = true; break; }
+        }
+    }
+    cdio_destroy(c);
+    return audio;
+}
+int Drive::raw_status() const { return disc_ready() ? 4 /* CDS_DISC_OK */ : 0; }
+void Drive::eject() const {
+    cdio_eject_media_drive(path_.c_str());
+}
+bool eject_device(const std::string& dev) {
+    return cdio_eject_media_drive(dev.c_str()) == DRIVER_OP_SUCCESS;
+}
+bool load_tray(const std::string& dev) {
+    driver_id_t drv = DRIVER_UNKNOWN;
+    return cdio_close_tray(dev.c_str(), &drv) == DRIVER_OP_SUCCESS;
+}
 #endif
 
 // ───────────────────────────── FLAC ───────────────────────────────────────────

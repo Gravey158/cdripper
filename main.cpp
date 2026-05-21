@@ -20,6 +20,14 @@ int run_probe_worker(const std::string& dev, int start_track,
 #include "gui.h"
 #endif
 
+#ifdef __APPLE__
+// Sparkle-Auto-Update (mac/sparkle_bridge.mm, nur APPLE in CMakeLists
+// gelinkt). cdripper-Build OHNE Sparkle.framework liefert Stubs (siehe
+// CMakeLists). Aufruf erst nach QApplication-Konstruktion — Sparkle
+// erwartet eine laufende NSApplication-Instanz, die Qt auf Mac aufsetzt.
+extern "C" void cdripper_sparkle_init();
+#endif
+
 static void usage(const char* a0) {
     std::cerr <<
       "cdripper — Audio-CD → FLAC → Nextcloud (Navidrome)\n"
@@ -106,6 +114,9 @@ int main(int argc, char** argv) {
         QApplication app(argc, argv);
         app.setApplicationName("CD Ripper");
         app.setApplicationVersion(cdr::VERSION);
+#ifdef __APPLE__
+        cdripper_sparkle_init();   // Auto-Update-Check (24h, siehe Info.plist)
+#endif
         // ── Design-System „Modern Dark, kuratiert" ───────────────────────
         // Tokens: bg #1e2127 · surface #23272e · card #262a31 · elevated
         // #2b313b · border #343b47 · hover #2f3640 · text #e8eaed · muted

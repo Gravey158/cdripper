@@ -1,4 +1,15 @@
 build/
+build-mac/
+build-flatpak/
 config.ini
 *.o
 cdripper
+
+# Sparkle (fetched by scripts/fetch-sparkle.sh, ~10MB Framework)
+mac/Sparkle.framework/
+mac/sparkle-tools/
+mac/sparkle-version
+
+# AppImage build outputs
+*.AppImage
+*.AppDir/

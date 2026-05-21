@@ -26,6 +26,16 @@
   <developer_name>Dennis</developer_name>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="1.7.5" date="2026-05-21">
+      <description>
+        <p>Mac full stack: libcdio-based eject + disc-status, .app bundle, .dmg packaging, Sparkle auto-update, Homebrew Cask formula.</p>
+      </description>
+    </release>
+    <release version="1.7.4" date="2026-05-21">
+      <description>
+        <p>Mac native build verified — first time cdripper compiles + runs on macOS.</p>
+      </description>
+    </release>
     <release version="1.7.3" date="2026-05-21">
       <description>
         <p>Flatpak adds Chromaprint (fpcalc) for AcoustID audio fingerprinting fallback.</p>

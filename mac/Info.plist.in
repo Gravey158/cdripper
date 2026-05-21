@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>cdripper</string>
+    <key>CFBundleIdentifier</key>
+    <string>io.github.gravey158.cdripper</string>
+    <key>CFBundleName</key>
+    <string>CD Ripper</string>
+    <key>CFBundleDisplayName</key>
+    <string>CD Ripper</string>
+    <key>CFBundleVersion</key>
+    <string>${MACOSX_BUNDLE_BUNDLE_VERSION}</string>
+    <key>CFBundleShortVersionString</key>
+    <string>${MACOSX_BUNDLE_SHORT_VERSION_STRING}</string>
+    <key>CFBundleIconFile</key>
+    <string>cdripper.icns</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <!-- Sparkle Auto-Update (v1.7.6+) -->
+    <key>SUFeedURL</key>
+    <string>https://flatpak.x2-pandora.de/cdripper/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>WSQLk9axkTO1Y8kJ+mSiGqT5KEZuofVEUzZSuR6qN+s=</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
+</dict>
+</plist>

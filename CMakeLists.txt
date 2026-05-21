@@ -1,5 +1,15 @@
 cmake_minimum_required(VERSION 3.16)
-project(cdripper CXX)
+
+# Version aus engine.h ableiten, damit CMake/CPack die gleiche VERSION sehen
+# wie die Runtime (statt sie zwei Stellen pflegen zu müssen).
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/engine.h" _engine_h)
+string(REGEX MATCH "VERSION = \"([0-9]+\\.[0-9]+\\.[0-9]+)\"" _ "${_engine_h}")
+set(CDRIPPER_VERSION "${CMAKE_MATCH_1}")
+if(NOT CDRIPPER_VERSION)
+  set(CDRIPPER_VERSION "0.0.0")
+endif()
+
+project(cdripper VERSION ${CDRIPPER_VERSION} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -58,7 +68,75 @@ if(nlohmann_json_FOUND)
   target_link_libraries(cdripper PRIVATE nlohmann_json::nlohmann_json)
 endif()
 
-install(TARGETS cdripper RUNTIME DESTINATION bin)
+# ── macOS: Sparkle Auto-Update (optional, nur wenn Framework gefetcht) ────────
+# fetch-sparkle.sh muss VOR cmake gelaufen sein, sonst fällt cdripper auf
+# einen Stub-Sparkle zurück (cdripper_sparkle_init = no-op). Sparkle =
+# Objective-C++ → sparkle_bridge.mm aktiviert OBJCXX-Language nur auf APPLE.
+if(APPLE)
+  set(SPARKLE_FRAMEWORK "${CMAKE_CURRENT_SOURCE_DIR}/mac/Sparkle.framework")
+  if(EXISTS "${SPARKLE_FRAMEWORK}")
+    enable_language(OBJCXX)
+    target_sources(cdripper PRIVATE mac/sparkle_bridge.mm)
+    target_link_options(cdripper PRIVATE
+      "-F${CMAKE_CURRENT_SOURCE_DIR}/mac"
+      "-Wl,-rpath,@loader_path/../Frameworks")
+    target_link_libraries(cdripper PRIVATE "-framework Sparkle")
+    set_source_files_properties(mac/sparkle_bridge.mm PROPERTIES
+      COMPILE_FLAGS "-F${CMAKE_CURRENT_SOURCE_DIR}/mac -fobjc-arc")
+    message(STATUS "Sparkle gefunden — Auto-Update aktiv.")
+    set(CDRIPPER_HAVE_SPARKLE TRUE)
+  else()
+    # Stub-File mit no-op-Funktionen, damit der extern "C"-Aufruf in
+    # main.cpp linkt auch ohne Sparkle (z.B. CI ohne fetch-sparkle.sh).
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/sparkle_stub.cpp"
+      "extern \"C\" void cdripper_sparkle_init() {}\n"
+      "extern \"C\" void cdripper_sparkle_check_for_updates() {}\n")
+    target_sources(cdripper PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/sparkle_stub.cpp")
+    message(STATUS "Sparkle nicht gefunden — Auto-Update stubbed (run scripts/fetch-sparkle.sh).")
+    set(CDRIPPER_HAVE_SPARKLE FALSE)
+  endif()
+endif()
+
+# ── macOS .app-Bundle (Property + Icon-Resource VOR install) ──────────────────
+# Auf Linux bleibt's ein normales /bin/cdripper. Beim Mac-Bundle landet das
+# Binary unter cdripper.app/Contents/MacOS/cdripper; Doppelklick startet ohne
+# args → cdripper sieht keine, fällt in GUI-Modus (main.cpp). CLI weiterhin
+# über cdripper.app/Contents/MacOS/cdripper bzw. den symlink, den Homebrew
+# Cask setzt.
+if(APPLE)
+  set(MACOSX_ICON_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/mac/cdripper.icns")
+  set_target_properties(cdripper PROPERTIES
+    MACOSX_BUNDLE TRUE
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/mac/Info.plist.in"
+    MACOSX_BUNDLE_BUNDLE_NAME "CD Ripper"
+    MACOSX_BUNDLE_BUNDLE_VERSION "${CDRIPPER_VERSION}"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "${CDRIPPER_VERSION}"
+    MACOSX_BUNDLE_GUI_IDENTIFIER "io.github.gravey158.cdripper"
+    MACOSX_BUNDLE_ICON_FILE "cdripper.icns"
+  )
+  target_sources(cdripper PRIVATE "${MACOSX_ICON_SOURCE}")
+  set_source_files_properties("${MACOSX_ICON_SOURCE}" PROPERTIES
+    MACOSX_PACKAGE_LOCATION "Resources")
+endif()
+
+# Install — APPLE = .app im DMG-Root; sonst /bin/cdripper.
+if(APPLE)
+  install(TARGETS cdripper BUNDLE DESTINATION .)
+else()
+  install(TARGETS cdripper RUNTIME DESTINATION bin)
+endif()
+
+# CPack DragNDrop → cdripper-VERSION-macos-ARCH.dmg
+if(APPLE)
+  set(CPACK_GENERATOR "DragNDrop")
+  set(CPACK_PACKAGE_NAME "cdripper")
+  set(CPACK_PACKAGE_VENDOR "Gravey158")
+  set(CPACK_PACKAGE_VERSION "${CDRIPPER_VERSION}")
+  set(CPACK_PACKAGE_FILE_NAME "cdripper-${CDRIPPER_VERSION}-macos-${CMAKE_SYSTEM_PROCESSOR}")
+  set(CPACK_DMG_VOLUME_NAME "CD Ripper ${CDRIPPER_VERSION}")
+  set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Audio CD ripper with MusicBrainz tagging")
+  include(CPack)
+endif()
 
 # ── Unit-Tests (T1) ────────────────────────────────────────────────────────────
 # Baut nicht beim Default-Build mit; explizit: cmake --build build --target

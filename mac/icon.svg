@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <radialGradient id="discBody" cx="50%" cy="50%" r="55%">
+      <stop offset="0%" stop-color="#4fc3f7"/>
+      <stop offset="60%" stop-color="#2979ff"/>
+      <stop offset="100%" stop-color="#1f63d6"/>
+    </radialGradient>
+    <radialGradient id="shine" cx="35%" cy="30%" r="40%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <!-- Outer disc -->
+  <circle cx="512" cy="512" r="480" fill="url(#discBody)"/>
+  <!-- Concentric rings (subtle grooves) -->
+  <circle cx="512" cy="512" r="430" fill="none" stroke="#ffffff" stroke-opacity="0.05" stroke-width="2"/>
+  <circle cx="512" cy="512" r="380" fill="none" stroke="#ffffff" stroke-opacity="0.05" stroke-width="2"/>
+  <circle cx="512" cy="512" r="320" fill="none" stroke="#ffffff" stroke-opacity="0.05" stroke-width="2"/>
+  <circle cx="512" cy="512" r="260" fill="none" stroke="#ffffff" stroke-opacity="0.05" stroke-width="2"/>
+  <!-- Shine highlight -->
+  <circle cx="512" cy="512" r="480" fill="url(#shine)"/>
+  <!-- Inner hub area -->
+  <circle cx="512" cy="512" r="240" fill="#262b33"/>
+  <!-- Center hole -->
+  <circle cx="512" cy="512" r="80" fill="#1e2127"/>
+</svg>
