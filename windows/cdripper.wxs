@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  WiX-Toolset-Manifest für cdripper-Installer (.msi).
+  Erzeugt einen pro-User-Install unter %LOCALAPPDATA%\Programs\cdripper —
+  kein admin-Rechte-Prompt, kompatibel mit WinGet-MSIX-Pattern.
+
+  Build:
+    wix build cdripper.wxs -d Version=$VERSION -d SourceDir=..\build-windows
+                                                -d ToolsDir=..\tools
+    → cdripper-$VERSION-windows-x64.msi
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+    <Package Name="CD Ripper"
+             Manufacturer="Gravey158"
+             Version="$(Version)"
+             UpgradeCode="b3d5a8e2-7c94-4f31-9b18-a16e2d4a6f8e"
+             InstallerVersion="500"
+             Scope="perUser"
+             Compressed="yes">
+
+        <SummaryInformation Description="Audio CD ripper with MusicBrainz tagging and AccurateRip verification" />
+        <MediaTemplate EmbedCab="yes" />
+        <MajorUpgrade DowngradeErrorMessage="Eine neuere Version von [ProductName] ist bereits installiert." />
+
+        <!-- Install location: %LOCALAPPDATA%\Programs\cdripper -->
+        <StandardDirectory Id="LocalAppDataFolder">
+            <Directory Id="ProgramsFolder" Name="Programs">
+                <Directory Id="INSTALLFOLDER" Name="cdripper">
+                    <Directory Id="ToolsFolder" Name="tools" />
+                </Directory>
+            </Directory>
+        </StandardDirectory>
+
+        <!-- Start menu shortcut -->
+        <StandardDirectory Id="ProgramMenuFolder">
+            <Directory Id="ApplicationProgramsFolder" Name="CD Ripper" />
+        </StandardDirectory>
+
+        <Feature Id="Main" Title="CD Ripper" Level="1">
+            <ComponentGroupRef Id="cdripperFiles" />
+            <ComponentGroupRef Id="cdripperTools" />
+            <ComponentRef Id="ApplicationShortcut" />
+        </Feature>
+
+        <!--
+          ComponentGroup für cdripper-Build-Output. heat.exe wird das aus
+          $(SourceDir) heraus generieren — siehe build-msi.ps1; daraus
+          entsteht eine generated.wxs die mit zusammen kompiliert wird.
+          ToolsDir analog für die Encoder-CLIs.
+        -->
+
+        <Component Id="ApplicationShortcut" Directory="ApplicationProgramsFolder" Guid="*">
+            <Shortcut Id="ApplicationStartMenuShortcut"
+                      Name="CD Ripper"
+                      Description="Audio CD ripper"
+                      Target="[INSTALLFOLDER]cdripper.exe"
+                      WorkingDirectory="INSTALLFOLDER" />
+            <RemoveFolder Id="CleanUpShortCut" Directory="ApplicationProgramsFolder" On="uninstall" />
+            <RegistryValue Root="HKCU" Key="Software\Gravey158\cdripper"
+                           Name="installed" Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+    </Package>
+</Wix>

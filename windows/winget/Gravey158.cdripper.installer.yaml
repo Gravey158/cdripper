@@ -1,0 +1,19 @@
+# WinGet installer manifest — beschreibt die .msi-URL + Hash + Architektur.
+# Templaten via publish-windows-release.ps1: __VERSION__, __SHA256__.
+PackageIdentifier: Gravey158.cdripper
+PackageVersion: __VERSION__
+Platform:
+  - Windows.Desktop
+MinimumOSVersion: 10.0.19041.0
+InstallerType: wix
+Scope: user
+InstallModes:
+  - silent
+UpgradeBehavior: install
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://flatpak.x2-pandora.de/cdripper/cdripper-__VERSION__-windows-x64.msi
+    InstallerSha256: __SHA256__
+    ProductCode: '{B3D5A8E2-7C94-4F31-9B18-A16E2D4A6F8E}'
+ManifestType: installer
+ManifestVersion: 1.6.0

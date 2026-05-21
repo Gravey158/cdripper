@@ -8,6 +8,21 @@
         <description>Automatic update feed for CD Ripper.</description>
         <language>en</language>
         <item>
+            <title>Version 1.7.9</title>
+            <pubDate>Thu, 21 May 2026 10:03:29 +0200</pubDate>
+            <sparkle:version>1.7.9</sparkle:version>
+            <sparkle:shortVersionString>1.7.9</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[<p>See git log v1.7.9 for changes.</p>]]></description>
+            <enclosure
+                url="https://flatpak.x2-pandora.de/cdripper/cdripper-1.7.9-macos-x86_64.dmg"
+                sparkle:version="1.7.9"
+                sparkle:shortVersionString="1.7.9"
+                length="39162147"
+                type="application/octet-stream"
+                sparkle:edSignature="dVK0AiSL8/Bl+rt17Ye3uQqDefF3G0iqWXlEHu6+lksebE+lBCGDEnmFaCGdTCunm4QdsLoOpbW6O0mF7egiAw==" />
+        </item>
+        <item>
             <title>Version 1.7.8</title>
             <pubDate>Thu, 21 May 2026 09:07:17 +0200</pubDate>
             <sparkle:version>1.7.8</sparkle:version>

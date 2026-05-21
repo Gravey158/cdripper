@@ -17,14 +17,21 @@
 
 #include <csignal>
 #include <fcntl.h>
-#include <poll.h>
-#ifdef __linux__
-#include <linux/cdrom.h>
+#ifdef _WIN32
+#  include <process.h>     // _spawnvp, _P_WAIT
+#  include <io.h>
+#else
+#  include <poll.h>
+#  include <sys/ioctl.h>
+#  include <sys/wait.h>
 #endif
-#include <sys/ioctl.h>
+#ifdef __linux__
+#  include <linux/cdrom.h>
+#endif
 #include <sys/stat.h>
-#include <sys/wait.h>
-#include <unistd.h>
+#ifndef _WIN32
+#  include <unistd.h>
+#endif
 
 #include <curl/curl.h>
 #include <discid/discid.h>
@@ -1491,13 +1498,23 @@ std::optional<AcoustIdHit> acoustid_identify(const fs::path& audio,
     if (key.empty()) return std::nullopt;
     // fpcalc liefert {"duration":N,"fingerprint":"..."}. Der Pfad wird von
     // uns erzeugt (keine Shell-Sonderzeichen) → einfache Quotes genügen.
+    // popen/pclose: POSIX und Windows (mit Underscore-Präfix in der CRT).
+#ifdef _WIN32
+    std::string cmd = "fpcalc -json \"" + audio.string() + "\" 2>NUL";
+    FILE* p = ::_popen(cmd.c_str(), "r");
+#else
     std::string cmd = "fpcalc -json '" + audio.string() + "' 2>/dev/null";
     FILE* p = ::popen(cmd.c_str(), "r");
+#endif
     if (!p) return std::nullopt;
     std::string fpjson;
     char b[8192]; size_t n;
     while ((n = std::fread(b, 1, sizeof b, p)) > 0) fpjson.append(b, n);
+#ifdef _WIN32
+    int prc = ::_pclose(p);
+#else
     int prc = ::pclose(p);
+#endif
     if (prc != 0 || fpjson.empty()) return std::nullopt;
     json fj;
     try { fj = json::parse(fpjson); } catch (...) { return std::nullopt; }
@@ -2363,6 +2380,15 @@ bool load_tray(const std::string& dev) {
 // ───────────────────────────── FLAC ───────────────────────────────────────────
 
 static int run(const std::vector<std::string>& argv) {
+#ifdef _WIN32
+    // _spawnvp(_P_WAIT, ...): Windows-CRT-Äquivalent von fork+execvp+
+    // waitpid, sucht im PATH. Argv-Strings müssen const char* sein.
+    std::vector<const char*> a;
+    for (const auto& s : argv) a.push_back(s.c_str());
+    a.push_back(nullptr);
+    intptr_t rc = ::_spawnvp(_P_WAIT, a[0], a.data());
+    return (int)rc;
+#else
     std::vector<char*> a;
     for (const auto& s : argv) a.push_back(const_cast<char*>(s.c_str()));
     a.push_back(nullptr);
@@ -2372,6 +2398,7 @@ static int run(const std::vector<std::string>& argv) {
     int st = 0;
     waitpid(pid, &st, 0);
     return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+#endif
 }
 
 // Gemeinsamer Tag-Satz (Vorbis-Comment-Stil KEY=VALUE) für FLAC & Opus.

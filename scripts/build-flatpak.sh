@@ -17,6 +17,14 @@ APP_ID=io.github.gravey158.cdripper
 
 echo ">>> cdripper $VERSION → Flatpak ($APP_ID)"
 
+# Mac-Mtimes via rsync rüber-zu-Bazzite drifte oft 1h voraus (CEST-Sync-
+# Diff, NTP-Stand). Ninja im flatpak-builder-Sandbox sieht „future"-
+# Files und gibt nach 100 re-gen-tries auf. Lokale `touch` setzt alle
+# Source-Files auf jetzt-Bazzite — Source-Inhalte unverändert, nur mtime.
+find . -path "./build-flatpak" -prune -o -path "./build" -prune \
+    -o -path "./.git" -prune -o -type f -print 2>/dev/null \
+    | xargs -r touch 2>/dev/null || true
+
 # Icon-PNG aus dem AppImage-SVG generieren, falls noch nicht vorhanden.
 # (Manifest verweist auf flatpak/cdripper.png.)
 if [ ! -f "$SRC/flatpak/cdripper.png" ]; then

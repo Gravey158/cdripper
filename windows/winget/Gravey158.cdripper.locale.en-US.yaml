@@ -1,0 +1,27 @@
+PackageIdentifier: Gravey158.cdripper
+PackageVersion: __VERSION__
+PackageLocale: en-US
+Publisher: Gravey158
+PublisherUrl: https://github.com/Gravey158
+PublisherSupportUrl: https://github.com/Gravey158/cdripper/issues
+PackageName: CD Ripper
+PackageUrl: https://github.com/Gravey158/cdripper
+License: MIT
+LicenseUrl: https://github.com/Gravey158/cdripper/blob/main/LICENSE
+Copyright: Copyright (c) 2026 Dennis
+ShortDescription: Audio CD ripper with MusicBrainz tagging and AccurateRip verification
+Description: |
+  cdripper is a no-nonsense audio CD ripper that produces verified FLAC files
+  with MusicBrainz metadata, AccurateRip CRC verification, embedded cover art,
+  and synced lyrics from LRCLib.
+Moniker: cdripper
+Tags:
+  - audio
+  - cd
+  - flac
+  - musicbrainz
+  - accuraterip
+  - ripper
+ReleaseNotesUrl: https://github.com/Gravey158/cdripper/releases/tag/v__VERSION__
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

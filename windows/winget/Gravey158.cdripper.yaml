@@ -1,0 +1,8 @@
+# WinGet version manifest. Im Release-Flow von publish-windows-release.ps1
+# mit der konkreten Version + SHA256 gepatcht, dann via wingetcreate gegen
+# microsoft/winget-pkgs als PR eingereicht.
+PackageIdentifier: Gravey158.cdripper
+PackageVersion: 0.0.0
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.6.0

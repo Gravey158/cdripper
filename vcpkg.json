@@ -1,0 +1,22 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "cdripper",
+  "version-string": "1.7.8",
+  "description": "Audio CD ripper with MusicBrainz tagging and AccurateRip verification",
+  "homepage": "https://github.com/Gravey158/cdripper",
+  "license": "MIT",
+  "supports": "windows",
+  "dependencies": [
+    "libcdio",
+    "libcdio-paranoia",
+    "libdiscid",
+    "nlohmann-json",
+    "curl",
+    "libflac",
+    {
+      "name": "qtbase",
+      "default-features": false,
+      "features": ["widgets", "gui"]
+    }
+  ]
+}

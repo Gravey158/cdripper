@@ -50,7 +50,14 @@ else()
                   "Für die GUI: 'sudo apt install qt6-base-dev' (oder qtbase5-dev).")
 endif()
 
-add_executable(cdripper ${CORE_SRC})
+if(WIN32)
+  # Subsystem:WINDOWS damit beim GUI-Doppelklick kein cmd-Fenster mit aufgeht.
+  # Im --cli-Modus läuft cdripper trotzdem mit echo'd-stdout — Windows
+  # redirects das korrekt wenn von cmd.exe/powershell aus gestartet.
+  add_executable(cdripper WIN32 ${CORE_SRC})
+else()
+  add_executable(cdripper ${CORE_SRC})
+endif()
 
 if(Qt6_FOUND OR Qt5_FOUND)
   target_compile_definitions(cdripper PRIVATE HAVE_QT=1)
@@ -62,7 +69,10 @@ target_include_directories(cdripper PRIVATE
   ${PARANOIA_INCLUDE_DIRS} ${DISCID_INCLUDE_DIRS})
 target_link_libraries(cdripper PRIVATE
   ${CDIO_LIBRARIES} ${CDDA_LIBRARIES} ${PARANOIA_LIBRARIES}
-  ${DISCID_LIBRARIES} CURL::libcurl pthread)
+  ${DISCID_LIBRARIES} CURL::libcurl)
+# Threads portabel — pthread auf POSIX, kein-op auf Windows (CRT bringt's mit).
+find_package(Threads REQUIRED)
+target_link_libraries(cdripper PRIVATE Threads::Threads)
 
 if(nlohmann_json_FOUND)
   target_link_libraries(cdripper PRIVATE nlohmann_json::nlohmann_json)
@@ -148,7 +158,7 @@ target_include_directories(cdripper_tests PRIVATE
   ${PARANOIA_INCLUDE_DIRS} ${DISCID_INCLUDE_DIRS})
 target_link_libraries(cdripper_tests PRIVATE
   ${CDIO_LIBRARIES} ${CDDA_LIBRARIES} ${PARANOIA_LIBRARIES}
-  ${DISCID_LIBRARIES} CURL::libcurl pthread)
+  ${DISCID_LIBRARIES} CURL::libcurl Threads::Threads)
 if(nlohmann_json_FOUND)
   target_link_libraries(cdripper_tests PRIVATE nlohmann_json::nlohmann_json)
 endif()
