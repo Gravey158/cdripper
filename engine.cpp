@@ -167,6 +167,14 @@ std::string default_config_path() {
 }
 
 static std::string g_cfg_path;          // aktiver Config-Pfad (von main gesetzt)
+// libcdio UND libdiscid sind NICHT thread-sicher (globaler Treiber-/State im
+// cdio_open-/discid_read-Pfad). Bei parallelen In-Process-Drive-Zugriffen
+// (Multi-Laufwerk: „Alle scannen"/„Alle starten" → mehrere read_disc_ident/
+// probe_disc_id/cdtext_lookup gleichzeitig + Auto-Cover-Previews) → Heap-
+// Korruption → Crash. Dieser Mutex serialisiert NUR die kurzen In-Process-TOC-/
+// Ident-Lesungen; das eigentliche Rippen/Scannen läuft im --rip-/--probe-worker-
+// Subprozess (eigener Prozess, eigene libcdio) und bleibt damit voll parallel.
+static std::mutex g_optical_mtx;
 void set_config_path(const std::string& p) { g_cfg_path = p; }
 std::string config_dir() {
     const std::string& base = g_cfg_path.empty() ? default_config_path()
@@ -1739,6 +1747,7 @@ std::vector<std::string> caa_image_urls(const std::string& rid,
 }
 
 std::optional<Album> cdtext_lookup(const std::string& device, int n) {
+    std::lock_guard<std::mutex> lk(g_optical_mtx);   // libcdio: nicht thread-safe
     CdIo_t* cdio = cdio_open(device.c_str(), DRIVER_UNKNOWN);
     if (!cdio) return std::nullopt;
     cdtext_t* ct = cdio_get_cdtext(cdio);
@@ -1879,6 +1888,7 @@ static bool libcdio_audio_toc(const std::string& dev,
 
 // 0 = Fehler, 1 = normal (libdiscid), 2 = rekonstruiert (Copy-Control-Pfad)
 static int discid_read_tolerant(DiscId* d, const std::string& dev) {
+    std::lock_guard<std::mutex> lk(g_optical_mtx);   // libcdio/libdiscid: nicht thread-safe
     if (discid_read_sparse(d, dev.c_str(), 0)) return 1;
     int first, last, offs[100];
     if (!libcdio_audio_toc(dev, first, last, offs)) return 0;

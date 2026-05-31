@@ -3,10 +3,13 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <cstdio>
 #include <iostream>
 #include <string>
 #include <vector>
 #include <filesystem>
+#include <thread>
+#include <atomic>
 #ifdef _WIN32
 #  include <io.h>       // _setmode, _fileno
 #  include <fcntl.h>    // _O_BINARY
@@ -86,6 +89,35 @@ int main(int argc, char** argv) {
     if (argc >= 3 && std::string(argv[1]) == "--probe-worker") {
         return run_probe_worker(argv[2], argc >= 4 ? std::atoi(argv[3]) : 1,
                                 argc >= 5 ? std::atoi(argv[4]) : 6);
+    }
+    // Debug: 2 Threads hämmern read_disc_ident gegen 2 Laufwerke — reproduziert
+    // den Multi-Scan-Concurrency-Crash (libcdio/libdiscid nicht thread-safe).
+    // Mit dem g_optical_mtx muss das sauber durchlaufen.  --stress-discid A B [N]
+    if (argc >= 4 && std::string(argv[1]) == "--stress-discid") {
+        // Hämmert libdiscid (read_disc_ident) UND libcdio (cdtext_lookup) parallel
+        // gegen beide Laufwerke = das reale Multi-Scan/Preview-Concurrency-Muster.
+        int n = argc >= 5 ? std::atoi(argv[4]) : 50;
+        std::atomic<int> ok{0}, err{0};
+        auto w_ident = [&](std::string dev) {
+            for (int i = 0; i < n; ++i) {
+                try { auto di = cdr::read_disc_ident(dev); (void)di; ++ok; }
+                catch (...) { ++err; }
+            }
+        };
+        auto w_cdtext = [&](std::string dev) {
+            for (int i = 0; i < n; ++i) {
+                try { auto a = cdr::cdtext_lookup(dev, 16); (void)a; ++ok; }
+                catch (...) { ++err; }
+            }
+        };
+        std::thread t1(w_ident,  std::string(argv[2]));
+        std::thread t2(w_ident,  std::string(argv[3]));
+        std::thread t3(w_cdtext, std::string(argv[2]));
+        std::thread t4(w_cdtext, std::string(argv[3]));
+        t1.join(); t2.join(); t3.join(); t4.join();
+        std::printf("stress-discid: ok=%d err=%d (durchgelaufen, kein Crash)\n",
+                    ok.load(), err.load());
+        return 0;
     }
 
     std::string cfg_path;          // leer = aus aktivem Profil ableiten
