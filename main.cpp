@@ -6,6 +6,10 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#ifdef _WIN32
+#  include <io.h>       // _setmode, _fileno
+#  include <fcntl.h>    // _O_BINARY
+#endif
 
 int run_cli(const cdr::Config& cfg, bool once);   // cli.cpp
 int run_calibrate(const cdr::Config& cfg);        // cli.cpp
@@ -45,6 +49,14 @@ static void usage(const char* a0) {
 
 int main(int argc, char** argv) {
     // Subprozess-Modus: ganz früh abfangen, vor Config/curl/GUI.
+#ifdef _WIN32
+    // Der Worker schreibt sein Zeilen-Protokoll über stdout in die Pipe der
+    // Eltern (WorkerSession). Binary-Modus → kein \r\n-Mapping durch die CRT;
+    // die Eltern lesen roh und erwarten LF-terminierte Zeilen (wie auf POSIX).
+    if (argc >= 2 && (std::string(argv[1]) == "--rip-worker" ||
+                      std::string(argv[1]) == "--probe-worker"))
+        _setmode(_fileno(stdout), _O_BINARY);
+#endif
     if (argc >= 6 && std::string(argv[1]) == "--rip-worker") {
         cdr::curl_global_setup();   // (Ripper braucht kein curl, aber harmlos)
         int rc = run_rip_worker(argv[2], argv[3],
@@ -132,6 +144,14 @@ int main(int argc, char** argv) {
             * { font-size: 10pt; }
             QMainWindow, QDialog { background:#1e2127; color:#e8eaed; }
             QWidget { color:#e8eaed; }
+            /* Randlose Titelleiste (Win/Linux) — macOS bleibt nativ */
+            #framelessTitleBar { background:#262a31; border-bottom:1px solid #1b1e24; }
+            #framelessTitle { color:#9aa0aa; font-size:9pt; padding-left:2px; }
+            #winBtnMin, #winBtnMax, #winBtnClose {
+                background:transparent; border:none; border-radius:0;
+                padding:0; color:#c8ccd2; font-size:11pt; }
+            #winBtnMin:hover, #winBtnMax:hover { background:#363c46; }
+            #winBtnClose:hover { background:#e03b3b; color:#ffffff; }
             QLabel { color:#e8eaed; background:transparent; }
             QLabel[muted="true"] { color:#9aa0aa; }
 

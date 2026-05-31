@@ -21,7 +21,7 @@ namespace cdr {
 //   PATCH  kleiner Bugfix / kleine Änderung
 // Bei jeder veröffentlichten Änderung hier hochzählen und im lokalen
 // Git-Repo einen passenden Tag setzen (git tag -a vX.Y.Z).
-constexpr const char* VERSION = "1.7.10";
+constexpr const char* VERSION = "1.8.0";
 
 struct Config {
     std::string device        = "/dev/sr0";   // primäres/Single-Laufwerk
@@ -345,8 +345,9 @@ std::vector<ArMatch> ar_lookup(
 // ── Plattform-Abstraktion: Subprozess-Worker ──────────────────────────────────
 // cdripper startet sich selbst als Worker-Subprozess via `--rip-worker`/
 // `--probe-worker` (siehe main.cpp). WorkerSession kapselt fork+exec+pipe+
-// poll auf POSIX bzw. CreateProcess+CreatePipe+ReadFile auf Windows (Stubs
-// in v1.7.6, voll-implementiert sobald wir nativ auf Windows bauen).
+// poll auf POSIX bzw. CreateProcessW+CreatePipe+PeekNamedPipe auf Windows
+// (Windows-Pfad implementiert; native Build-Verifikation gegen ein echtes
+// Laufwerk steht noch aus).
 //
 // Lifecycle: ctor spawnt das Kind; spawned() prüft Erfolg; read_line()
 // liefert die nächste vollständige Zeile aus stdout (oder leer = Timeout,
@@ -374,6 +375,7 @@ private:
 #endif
     std::string buf_;
     bool spawned_ = false;
+    bool killed_  = false;   // kill() gesetzt → wait_exit() liefert -1 (wie SIGKILL)
 };
 
 // Absoluter Pfad des laufenden Binaries — Linux: /proc/self/exe (immer

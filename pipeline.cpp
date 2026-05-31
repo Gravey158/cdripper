@@ -441,14 +441,33 @@ void Pipeline::process_disc(Drive& drv, const std::atomic<bool>& stop,
                         // [mm:ss.xx]-Timestamps wird automatisch als synced
                         // erkannt. Nur FLAC (Default); MP3/Opus später bei
                         // Bedarf analog.
+                        // metaflac läuft über die Shell (std::system). Quoting
+                        // plattformabhängig: POSIX 'single' + ';' (beide laufen)
+                        // + 2>/dev/null; Windows "double" + '&' (cmd-Sequenz) +
+                        // 2>NUL. Beide Pfade sind von uns erzeugte Staging-/
+                        // Sidecar-Dateien (numerisch, kontrolliertes Tmp-Dir),
+                        // aber zur Sicherheit nur einbetten, wenn KEIN Shell-
+                        // Metazeichen im Pfad steht — sonst best-effort skip
+                        // (kein system()-Aufruf mit zerbrochenem Kommando).
+                        auto shell_safe = [](const std::string& s) {
+                            return s.find_first_of("\"'`$&|;<>(){}[]^%!*?~\r\n")
+                                   == std::string::npos;
+                        };
                         if (enc.extension() == ".flac" &&
-                            enc.string().find('\'') == std::string::npos &&
-                            lrcp.string().find('\'') == std::string::npos) {
+                            shell_safe(enc.string()) && shell_safe(lrcp.string())) {
+#ifdef _WIN32
+                            std::string cmd =
+                                "metaflac --remove-tag=LYRICS \"" +
+                                enc.string() + "\" 2>NUL & "
+                                "metaflac --set-tag-from-file=LYRICS=\"" +
+                                lrcp.string() + "\" \"" + enc.string() + "\"";
+#else
                             std::string cmd =
                                 "metaflac --remove-tag=LYRICS '" +
                                 enc.string() + "' 2>/dev/null; "
                                 "metaflac --set-tag-from-file=LYRICS='" +
                                 lrcp.string() + "' '" + enc.string() + "'";
+#endif
                             if (std::system(cmd.c_str()) != 0 && cb_.onLog)
                                 cb_.onLog("Track " + std::to_string(*idx) +
                                     ": LYRICS-Tag einbetten fehlgeschlagen "

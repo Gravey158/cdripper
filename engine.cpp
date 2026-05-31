@@ -12,6 +12,7 @@
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <thread>
 #include <sstream>
 #include <stdexcept>
 
@@ -56,6 +57,17 @@ static std::string trim(std::string s) {
     while (!s.empty() && sp(s.front())) s.erase(s.begin());
     while (!s.empty() && sp(s.back()))  s.pop_back();
     return s;
+}
+
+// Portabler fopen für fs::path: auf Windows ist path::c_str() ein wchar_t*,
+// std::fopen will char* — dort _wfopen mit dem nativen Wide-Pfad (Unicode-sicher).
+static FILE* fopen_path(const fs::path& p, const char* mode) {
+#ifdef _WIN32
+    std::wstring wmode(mode, mode + std::strlen(mode));
+    return ::_wfopen(p.c_str(), wmode.c_str());
+#else
+    return std::fopen(p.c_str(), mode);
+#endif
 }
 
 std::string sanitize(const std::string& in) {
@@ -317,7 +329,10 @@ bool save_config(const Config& c, const std::string& path) {
         f << "\n";
     }
     f.close();
-    ::chmod(path.c_str(), 0600);   // enthält Passwörter
+#ifndef _WIN32
+    ::chmod(path.c_str(), 0600);   // enthält Passwörter (POSIX-Perms; auf
+                                   // Windows schützt das User-Profil-Verzeichnis)
+#endif
     return true;
 }
 
@@ -428,6 +443,7 @@ std::optional<std::string> WorkerSession::read_line(int timeout_ms) {
 }
 
 void WorkerSession::kill() {
+    killed_ = true;
     if (pid_ > 0) ::kill(pid_, SIGKILL);
 }
 
@@ -446,17 +462,148 @@ int WorkerSession::wait_exit() {
     return -1;
 }
 #else
-// Windows-Stubs — voll-implementiert wenn wir cdripper nativ auf Windows
-// bauen (CreateProcessW + CreatePipe + STARTUPINFOEX(stdout-Pipe-Write) +
-// PeekNamedPipe für non-blocking read + WaitForSingleObject(handle, ms) +
-// GetExitCodeProcess). Bis dahin liefern Stubs ein nicht-spawnedes Session-
-// Objekt, das spawned()==false meldet — Aufrufer fällt auf RipResult::Fatal
-// zurück (selbe Semantik wie pipe()-Fehler auf POSIX).
-WorkerSession::WorkerSession(const std::string&, const std::vector<std::string>&) {}
-WorkerSession::~WorkerSession() {}
-std::optional<std::string> WorkerSession::read_line(int) { return std::nullopt; }
-void WorkerSession::kill() {}
-int  WorkerSession::wait_exit() { return -1; }
+// ── Windows-Implementierung (nativ, MSVC) ─────────────────────────────────────
+// Semantik 1:1 wie der POSIX-Pfad oben: stdout des Kindes wird über eine
+// anonyme Pipe abgegriffen, read_line() liest non-blocking (PeekNamedPipe +
+// ReadFile) bis timeout_ms. Rückgabe: Zeile | leerer String (noch nichts /
+// Timeout, wie POSIX poll==0) | nullopt (EOF/Fehler). Nur stdout wird
+// umgeleitet (wie dup2(STDOUT) auf POSIX); stderr/stdin bleiben unbelegt.
+// Der Worker flusht pro Zeile (fflush(stdout), cli.cpp) → keine Pipe-
+// Pufferung. Windows hängt im Textmodus \r an jedes \n — read_line strippt es.
+
+// Argument-Quoting nach den CommandLineToArgvW-Regeln (Backslash/Quote-
+// Escaping) — sonst zerbrechen Pfade mit Leerzeichen (Temp-Dir, Exe-Pfad,
+// "C:\Program Files\…"). Siehe MSDN „Parsing C++ Command-Line Arguments".
+static std::string ws_quote_arg(const std::string& a) {
+    if (!a.empty() && a.find_first_of(" \t\n\v\"") == std::string::npos)
+        return a;                              // kein Quoting nötig
+    std::string out = "\"";
+    for (size_t i = 0;; ++i) {
+        unsigned nbs = 0;
+        while (i < a.size() && a[i] == '\\') { ++nbs; ++i; }
+        if (i == a.size())    { out.append(nbs * 2, '\\'); break; }
+        else if (a[i] == '"') { out.append(nbs * 2 + 1, '\\'); out.push_back('"'); }
+        else                  { out.append(nbs, '\\'); out.push_back(a[i]); }
+    }
+    out.push_back('"');
+    return out;
+}
+static std::wstring ws_to_wide(const std::string& s) {
+    if (s.empty()) return std::wstring();
+    int n = ::MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(),
+                                  nullptr, 0);
+    std::wstring w((size_t)n, L'\0');
+    ::MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), w.data(), n);
+    return w;
+}
+
+WorkerSession::WorkerSession(const std::string& self_exe,
+                             const std::vector<std::string>& args) {
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof sa;
+    sa.bInheritHandle = TRUE;                  // Pipe-Enden grundsätzlich vererbbar
+    HANDLE rd = nullptr, wr = nullptr;
+    if (!::CreatePipe(&rd, &wr, &sa, 0)) return;
+    // Das LESE-Ende darf das Kind NICHT erben — sonst hält es eine Kopie offen
+    // und die Pipe meldet beim Kind-Exit nie EOF (read blockiert ewig).
+    if (!::SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0)) {
+        ::CloseHandle(rd); ::CloseHandle(wr); return;
+    }
+
+    std::string cmd = ws_quote_arg(self_exe);
+    for (const auto& a : args) { cmd += ' '; cmd += ws_quote_arg(a); }
+    std::wstring wexe = ws_to_wide(self_exe);
+    std::wstring wcmd = ws_to_wide(cmd);
+    std::vector<wchar_t> cmdbuf(wcmd.begin(), wcmd.end());
+    cmdbuf.push_back(L'\0');                    // CreateProcessW braucht mutable Buffer
+
+    STARTUPINFOW si{};
+    si.cb = sizeof si;
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = wr;                         // nur stdout abgreifen (= dup2 STDOUT)
+    si.hStdError  = nullptr;
+    si.hStdInput  = nullptr;
+
+    PROCESS_INFORMATION pi{};
+    BOOL ok = ::CreateProcessW(
+        wexe.c_str(),       // lpApplicationName explizit (kein PATH-Suchlauf)
+        cmdbuf.data(),      // lpCommandLine (mutable)
+        nullptr, nullptr,
+        TRUE,               // Handles erben (das Schreib-Ende für stdout)
+        CREATE_NO_WINDOW,   // kein Konsolenfenster für den Worker
+        nullptr, nullptr, &si, &pi);
+
+    ::CloseHandle(wr);      // Eltern schreiben nie → schließen, sonst kommt nie EOF
+    if (!ok) { ::CloseHandle(rd); return; }
+    ::CloseHandle(pi.hThread);
+    h_process_ = pi.hProcess;
+    h_stdout_  = rd;
+    spawned_   = true;
+}
+
+WorkerSession::~WorkerSession() {
+    // Best-effort wie der POSIX-dtor: Handles freigeben (nicht killen — das
+    // macht rip_session bei Stall explizit via kill()). Schließen des Lese-
+    // Endes gibt dem noch laufenden Kind beim nächsten Write eine Broken Pipe.
+    if (h_stdout_)  ::CloseHandle((HANDLE)h_stdout_);
+    if (h_process_) ::CloseHandle((HANDLE)h_process_);
+}
+
+std::optional<std::string> WorkerSession::read_line(int timeout_ms) {
+    auto take_line = [this]() -> std::optional<std::string> {
+        auto nl = buf_.find('\n');
+        if (nl == std::string::npos) return std::nullopt;
+        std::string ln = buf_.substr(0, nl);
+        if (!ln.empty() && ln.back() == '\r') ln.pop_back();   // CRLF → LF
+        buf_.erase(0, nl + 1);
+        return ln;
+    };
+    if (auto l = take_line()) return l;         // schon gepuffert
+    HANDLE h = (HANDLE)h_stdout_;
+    if (!h) return std::nullopt;
+
+    ULONGLONG start = ::GetTickCount64();
+    for (;;) {
+        DWORD avail = 0;
+        if (!::PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr))
+            return std::nullopt;                // Broken Pipe = Kind zu = EOF
+        if (avail > 0) {
+            char t[8192];
+            DWORD want = avail < (DWORD)sizeof t ? avail : (DWORD)sizeof t;
+            DWORD got = 0;
+            if (!::ReadFile(h, t, want, &got, nullptr) || got == 0)
+                return std::nullopt;            // EOF/Fehler
+            buf_.append(t, got);
+            if (auto l = take_line()) return l;
+            return std::string{};               // Teildaten → wie Timeout behandeln
+        }
+        if (timeout_ms <= 0) return std::string{};            // non-blocking Poll
+        ULONGLONG elapsed = ::GetTickCount64() - start;
+        if (elapsed >= (ULONGLONG)timeout_ms) return std::string{};   // Timeout
+        DWORD rest = (DWORD)((ULONGLONG)timeout_ms - elapsed);
+        ::Sleep(rest < 15 ? rest : 15);         // Poll-Granularität (~15 ms)
+    }
+}
+
+void WorkerSession::kill() {
+    killed_ = true;
+    if (h_process_) ::TerminateProcess((HANDLE)h_process_, 1);
+}
+
+int WorkerSession::wait_exit() {
+    if (!h_process_) return -1;
+    HANDLE hp = (HANDLE)h_process_;
+    if (::WaitForSingleObject(hp, 5000) != WAIT_OBJECT_0)
+        return -1;                  // Timeout/Fehler → dtor räumt h_process_ ab (wie POSIX pid_)
+    DWORD code = 0;
+    // killed_ = forciert via TerminateProcess → wie SIGKILL/!WIFEXITED auf POSIX:
+    // -1, damit ein Watchdog-Kill nicht mit einem echten worker-exit(1) (Fatal)
+    // verwechselt wird (TerminateProcess(…,1) hätte sonst denselben Code 1).
+    int rc = killed_ ? -1 : (::GetExitCodeProcess(hp, &code) ? (int)code : -1);
+    ::CloseHandle(hp);
+    h_process_ = nullptr;
+    return rc;
+}
 #endif
 
 // ── Rip-Session: Worker-Subprozess + Watchdog ──────────────────────────────────
@@ -850,7 +997,7 @@ ProbeResult disc_probe(const std::string& device,
         if (ntracks > 0 && hungtrk >= ntracks) break;
         if (stop && stop()) break;
         start = hungtrk + 1;                   // diesen Track überspringen
-        for (int i = 0; i < 45 && !(stop && stop()); ++i) ::sleep(1);
+        for (int i = 0; i < 45 && !(stop && stop()); ++i) std::this_thread::sleep_for(std::chrono::seconds(1));
         if (stop && stop()) break;
     }
     return probe_classify(raw, ntracks, disc_end, hung, skips, rr);
@@ -1019,7 +1166,7 @@ static bool http_download(const std::string& url, const std::string& ua,
                           const fs::path& out) {
     CURL* c = curl_easy_init();
     if (!c) return false;
-    FILE* fp = std::fopen(out.c_str(), "wb");
+    FILE* fp = fopen_path(out, "wb");
     if (!fp) { curl_easy_cleanup(c); return false; }
     curl_easy_setopt(c, CURLOPT_URL, url.c_str());
     curl_easy_setopt(c, CURLOPT_USERAGENT, ua.c_str());
@@ -1276,7 +1423,7 @@ std::vector<Album> mb_release_candidates(const std::string& discid,
                       "labels+release-groups";
     long code = 0;
     auto body = http_get(url, ua, code);
-    ::sleep(1);
+    std::this_thread::sleep_for(std::chrono::seconds(1));
     if (body && code == 200) {
         json j;
         try { j = json::parse(*body); } catch (...) { j = json(); }
@@ -1313,7 +1460,7 @@ std::vector<Album> mb_release_candidates(const std::string& discid,
             "labels+release-groups";
         long fc = 0;
         auto fb = http_get(furl, ua, fc);
-        ::sleep(1);
+        std::this_thread::sleep_for(std::chrono::seconds(1));
         if (fb && fc == 200) {
             json fj;
             try { fj = json::parse(*fb); } catch (...) { fj = json(); }
@@ -1368,7 +1515,7 @@ std::optional<Album> cddb_lookup(const std::string& toc, const std::string& ua) 
     long code = 0;
     auto body =
         http_get("https://gnudb.gnudb.org/~cddb/cddb.cgi?" + q, ua, code);
-    ::sleep(1);
+    std::this_thread::sleep_for(std::chrono::seconds(1));
     if (!body || code != 200) return std::nullopt;
     std::string cat, did;
     {
@@ -1390,7 +1537,7 @@ std::optional<Album> cddb_lookup(const std::string& toc, const std::string& ua) 
     if (cat.empty() || did.empty()) return std::nullopt;
     auto rd = http_get("https://gnudb.gnudb.org/~cddb/cddb.cgi?cmd=cddb+read+" +
                        cat + "+" + did + hello, ua, code);
-    ::sleep(1);
+    std::this_thread::sleep_for(std::chrono::seconds(1));
     if (!rd || code != 200) return std::nullopt;
     auto u8 = [](std::string s) {
         return is_valid_utf8(s) ? s : latin1_to_utf8(s); };
@@ -1451,7 +1598,7 @@ std::vector<ReleaseHit> mb_search_releases(const std::string& artist,
     long code = 0;
     auto body = http_get("https://musicbrainz.org/ws/2/release/?query=" + q +
                          "&fmt=json&limit=15", ua, code);
-    ::sleep(1);
+    std::this_thread::sleep_for(std::chrono::seconds(1));
     if (!body || code != 200) return out;
     json j;
     try { j = json::parse(*body); } catch (...) { return out; }
@@ -1481,7 +1628,7 @@ std::optional<Album> mb_release_by_id(const std::string& mbid, int want_tracks,
     auto body = http_get("https://musicbrainz.org/ws/2/release/" + mbid +
         "?fmt=json&inc=recordings+artist-credits+genres+labels+"
         "release-groups", ua, code);
-    ::sleep(1);
+    std::this_thread::sleep_for(std::chrono::seconds(1));
     if (!body || code != 200) return std::nullopt;
     json r;
     try { r = json::parse(*body); } catch (...) { return std::nullopt; }
@@ -1841,7 +1988,7 @@ long Ripper::rip(const AudioTrack& at, const fs::path& wav,
     uint32_t nsec = (uint32_t)(hi - lo + 1);
 
     auto one_pass = [&]() {
-        FILE* out = std::fopen(wav.c_str(), "wb");
+        FILE* out = fopen_path(wav, "wb");
         if (!out)
             throw std::runtime_error("kann WAV nicht schreiben: " + wav.string());
         wav_header(out, nsec * CDIO_CD_FRAMESIZE_RAW);
@@ -2294,12 +2441,23 @@ void log_to_file(const std::string& line) {
 // ───────────────────────────── Drive (ioctl) ──────────────────────────────────
 
 Drive::Drive(const std::string& p) : path_(p) {
+#ifdef _WIN32
+    // Windows: kein POSIX-fd. Die Status-/Eject-Methoden (siehe #else-Zweig
+    // weiter unten) laufen komplett über libcdio anhand path_ — kein open()
+    // mit O_NONBLOCK (das gibt's auf MSVC nicht) und kein ioctl nötig.
+    fd_ = -1;
+#else
     fd_ = ::open(p.c_str(), O_RDONLY | O_NONBLOCK);
     if (fd_ < 0)
         throw std::runtime_error("Kann Laufwerk nicht öffnen: " + p + " (" +
                                  std::strerror(errno) + ")");
+#endif
 }
-Drive::~Drive()              { if (fd_ >= 0) ::close(fd_); }
+Drive::~Drive() {
+#ifndef _WIN32
+    if (fd_ >= 0) ::close(fd_);
+#endif
+}
 #ifdef __linux__
 int  Drive::raw_status() const { return ::ioctl(fd_, CDROM_DRIVE_STATUS, 0); }
 bool Drive::disc_ready() const { return raw_status() == CDS_DISC_OK; }
@@ -2338,9 +2496,11 @@ bool load_tray(const std::string& dev) {
     return r == 0;
 }
 #else
-// macOS/Darwin (BSD): keine Linux-CDROM-ioctls. Funktional äquivalent via
-// libcdio's portabler API — cdio_eject_media_drive / cdio_close_tray für
-// die Klappe, cdio_open + Track-Enumeration für Disc-Präsenz und
+// macOS UND Windows: dieser #else-Zweig fängt ALLES außer __linux__ ab — also
+// auch _WIN32, NICHT nur Darwin. Keine Linux-CDROM-ioctls; funktional
+// äquivalent via libcdios portabler API — cdio_eject_media_drive /
+// cdio_close_tray für die Klappe, cdio_open + Track-Enumeration für
+// Disc-Präsenz und
 // Audio-Erkennung. Etwas langsamer als die Linux-ioctls (jeder Status-
 // Check öffnet+schließt das Device), aber funktional korrekt — und gut
 // genug für Mac-typische geringe Poll-Frequenz.
@@ -2573,7 +2733,7 @@ void WebDav::ensure_dirs(const std::vector<std::string>& segs) {
 void WebDav::put(const fs::path& local, const std::vector<std::string>& segs) {
     CURL* c = curl_easy_init();
     std::string url = url_for(base_, c, segs);
-    FILE* fp = std::fopen(local.c_str(), "rb");
+    FILE* fp = fopen_path(local, "rb");
     if (!fp) { curl_easy_cleanup(c);
                throw std::runtime_error("PUT: lokal nicht lesbar: " + local.string()); }
     std::error_code ec;

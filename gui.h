@@ -124,6 +124,10 @@ private slots:
 protected:
     bool eventFilter(QObject* obj, QEvent* ev) override;  // Cover-Easter-Egg
     void closeEvent(QCloseEvent* e) override;              // Größe merken
+#ifdef Q_OS_WIN
+    bool nativeEvent(const QByteArray& eventType, void* message,
+                     qintptr* result) override;            // randloses Resize/Drag
+#endif
 
 private:
     void setControlsRunning(bool r);
@@ -153,6 +157,7 @@ private:
     QLabel* discScanCap_ = nullptr;              // Status unter der Disc
     QWidget* coverSpin_ = nullptr;               // Cover-Easter-Egg (Overlay)
     MultiWindow* multiWin_ = nullptr;            // T7-GUI (Single-Instanz)
+    QWidget* titleBar_ = nullptr;                // randlose Titelleiste (Win/Linux)
 
     QComboBox*  device_;                         // erkannte Laufwerke
     QCheckBox*  dryRun_;
