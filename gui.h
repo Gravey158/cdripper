@@ -127,6 +127,8 @@ protected:
 #ifdef Q_OS_WIN
     bool nativeEvent(const QByteArray& eventType, void* message,
                      qintptr* result) override;            // randloses Resize/Drag
+    void showEvent(QShowEvent* e) override;                // WS_THICKFRAME anwenden
+    bool winFrameApplied_ = false;
 #endif
 
 private:

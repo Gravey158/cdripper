@@ -41,6 +41,7 @@
 #include <QPainterPath>
 #include <QProgressDialog>
 #include <QCloseEvent>
+#include <QShowEvent>
 #include <QGuiApplication>
 #include <QScreen>
 #include <QSettings>
@@ -505,6 +506,126 @@ private:
 };
 
 // ── Multi-Laufwerk-Modus (T7-GUI) ──────────────────────────────────────────────
+// ───────────────────────── Randlose Titelleiste (Win/Linux) ───────────────────
+// macOS behält die native Titelleiste; nur Win/Linux werden randlos mit eigener
+// Leiste (Titel links, Min/Max/Close rechts). Von MainWindow UND MultiWindow
+// genutzt → vor beiden definiert.
+#ifndef Q_OS_MACOS
+class FramelessTitleBar : public QWidget {
+public:
+    explicit FramelessTitleBar(QWidget* win, const QString& titleText)
+        : QWidget(win), win_(win) {
+        setObjectName("framelessTitleBar");
+        setFixedHeight(34);
+        auto* h = new QHBoxLayout(this);
+        h->setContentsMargins(12, 0, 0, 0);
+        h->setSpacing(0);
+        auto* title = new QLabel(titleText);
+        title->setObjectName("framelessTitle");
+        title->setAttribute(Qt::WA_TransparentForMouseEvents);   // Klick → Drag
+        h->addWidget(title);
+        h->addStretch(1);
+        auto mkBtn = [&](const QString& glyph, const QString& obj) {
+            auto* b = new QPushButton(glyph);
+            b->setObjectName(obj);
+            b->setFixedSize(46, 34);
+            b->setFocusPolicy(Qt::NoFocus);
+            b->setCursor(Qt::ArrowCursor);
+            h->addWidget(b);
+            return b;
+        };
+        QPushButton* bMin = mkBtn(QString::fromUtf8("─"), "winBtnMin");
+        QPushButton* bMax = mkBtn(QString::fromUtf8("□"), "winBtnMax");
+        QPushButton* bCls = mkBtn(QString::fromUtf8("✕"), "winBtnClose");
+        connect(bMin, &QPushButton::clicked, win_, &QWidget::showMinimized);
+        connect(bMax, &QPushButton::clicked, this, [this]{ toggleMax(); });
+        connect(bCls, &QPushButton::clicked, win_, &QWidget::close);
+    }
+    void toggleMax() {
+        if (win_->isMaximized()) win_->showNormal(); else win_->showMaximized();
+    }
+protected:
+#ifndef Q_OS_WIN
+    // Linux: Ziehen via startSystemMove, Doppelklick = Max-Toggle.
+    // (Auf Windows erledigt das WM_NCHITTEST/HTCAPTION nativ — inkl. Aero-Snap.)
+    void mousePressEvent(QMouseEvent* e) override {
+        if (e->button() == Qt::LeftButton && childAt(e->pos()) == nullptr)
+            if (auto* wh = win_->windowHandle()) wh->startSystemMove();
+    }
+    void mouseDoubleClickEvent(QMouseEvent* e) override {
+        if (e->button() == Qt::LeftButton) toggleMax();
+    }
+#endif
+private:
+    QWidget* win_;
+};
+#endif  // !Q_OS_MACOS
+
+#ifdef Q_OS_WIN
+// Frameless-ABER-resizebar unter Windows: Qt::FramelessWindowHint entfernt
+// WS_THICKFRAME → Windows ignoriert dann die WM_NCHITTEST-Resize-Codes (Resize
+// komplett tot, egal wie groß die Greifzone). Fix: WS_THICKFRAME (+ Snap/Min/
+// Max) zurück an den HWND, und per WM_NCCALCSIZE den nativen Rahmen wegrechnen,
+// damit es optisch randlos bleibt. Beide randlosen Fenster rufen das.
+static void applyWinFrameless(QWidget* w) {
+    HWND hwnd = reinterpret_cast<HWND>(w->winId());
+    LONG_PTR s = ::GetWindowLongPtr(hwnd, GWL_STYLE);
+    ::SetWindowLongPtr(hwnd, GWL_STYLE,
+        s | WS_THICKFRAME | WS_CAPTION | WS_MAXIMIZEBOX | WS_MINIMIZEBOX);
+    ::SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+        SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+static bool winFramelessEvent(QWidget* w, QWidget* titleBar,
+                              void* message, qintptr* result) {
+    MSG* m = static_cast<MSG*>(message);
+    if (m->message == WM_NCCALCSIZE && m->wParam == TRUE) {
+        // Client-Area = ganzes Fenster (nativen Rahmen wegrechnen). Maximiert:
+        // Rahmenränder zurückgeben, sonst hängt das Fenster ~8px über jeden
+        // Monitorrand (Inhalt am Rand + Taskleiste verdeckt).
+        if (w->isMaximized()) {
+            auto* p = reinterpret_cast<NCCALCSIZE_PARAMS*>(m->lParam);
+            int fx = ::GetSystemMetrics(SM_CXSIZEFRAME) +
+                     ::GetSystemMetrics(SM_CXPADDEDBORDER);
+            int fy = ::GetSystemMetrics(SM_CYSIZEFRAME) +
+                     ::GetSystemMetrics(SM_CXPADDEDBORDER);
+            p->rgrc[0].left += fx; p->rgrc[0].right  -= fx;
+            p->rgrc[0].top  += fy; p->rgrc[0].bottom -= fy;
+        }
+        *result = 0;
+        return true;
+    }
+    if (m->message != WM_NCHITTEST) return false;
+    const qreal dpr = w->devicePixelRatioF();
+    const QPoint pt = w->mapFromGlobal(
+        QPoint(int(GET_X_LPARAM(m->lParam) / dpr),
+               int(GET_Y_LPARAM(m->lParam) / dpr)));
+    const QRect r = w->rect();
+    const int b = 8, c = 14;     // Kanten 8px, Ecken 14px Greifzone
+    const bool L = pt.x() < b, R = pt.x() >= r.width() - b;
+    const bool T = pt.y() < b, B = pt.y() >= r.height() - b;
+    const bool Lc = pt.x() < c, Rc = pt.x() >= r.width() - c;
+    const bool Tc = pt.y() < c, Bc = pt.y() >= r.height() - c;
+    if (!w->isMaximized()) {
+        if (Tc && Lc) { *result = HTTOPLEFT;     return true; }
+        if (Tc && Rc) { *result = HTTOPRIGHT;    return true; }
+        if (Bc && Lc) { *result = HTBOTTOMLEFT;  return true; }
+        if (Bc && Rc) { *result = HTBOTTOMRIGHT; return true; }
+        if (L) { *result = HTLEFT;   return true; }
+        if (R) { *result = HTRIGHT;  return true; }
+        if (T) { *result = HTTOP;    return true; }
+        if (B) { *result = HTBOTTOM; return true; }
+    }
+    if (titleBar && pt.y() >= 0 && pt.y() < titleBar->height() &&
+        pt.x() >= 0 && pt.x() < r.width()) {
+        if (!qobject_cast<QPushButton*>(w->childAt(pt))) {
+            *result = HTCAPTION; return true;
+        }
+    }
+    return false;
+}
+#endif  // Q_OS_WIN
+
 // Additiv & eigenständig: Single-Drive-MainWindow bleibt unberührt. Eine
 // Spalte je Laufwerk (Cover+Album oben, Live-Disc darunter), eine gemeinsame
 // Rip-Tabelle unten. Je Spalte ein eigener Controller (= eigene Pipeline +
@@ -746,7 +867,21 @@ public:
         setAttribute(Qt::WA_StyledBackground, true);
         setWindowTitle("CD-Ripper — Multi-Laufwerk");
         resize(1120, 780);
-        auto* root = new QVBoxLayout(this);
+#ifndef Q_OS_MACOS
+        setWindowFlag(Qt::FramelessWindowHint);    // randlos wie MainWindow
+#endif
+        // Äußeres Layout randlos; eigene Titelleiste oben, Inhalt im Container
+        // (behält die normalen Ränder/Spacing des bisherigen Aufbaus).
+        auto* outer = new QVBoxLayout(this);
+        outer->setContentsMargins(0, 0, 0, 0);
+        outer->setSpacing(0);
+#ifndef Q_OS_MACOS
+        titleBar_ = new FramelessTitleBar(this, "CD-Ripper — Multi-Laufwerk");
+        outer->addWidget(titleBar_);
+#endif
+        auto* content = new QWidget;
+        outer->addWidget(content, 1);
+        auto* root = new QVBoxLayout(content);     // restlicher Aufbau unverändert
         auto* bar  = new QHBoxLayout;
         hdr_ = new QLabel;
         bar->addWidget(hdr_);
@@ -872,94 +1007,41 @@ private:
     QMap<QString, int>       rows_;
     QTableWidget*            tbl_;
     QPlainTextEdit*          log_;
-};
-
-// ───────────────────────── Randlose Titelleiste (Win/Linux) ───────────────────
-// macOS behält die native Titelleiste (Ampel + OS-Integration); nur Win/Linux
-// werden randlos mit eigener Leiste (Titel links, Min/Max/Close rechts).
-#ifndef Q_OS_MACOS
-class FramelessTitleBar : public QWidget {
-public:
-    explicit FramelessTitleBar(QMainWindow* win) : QWidget(win), win_(win) {
-        setObjectName("framelessTitleBar");
-        setFixedHeight(34);
-        auto* h = new QHBoxLayout(this);
-        h->setContentsMargins(12, 0, 0, 0);
-        h->setSpacing(0);
-        auto* title = new QLabel("CD-Ripper → Navidrome");
-        title->setObjectName("framelessTitle");
-        title->setAttribute(Qt::WA_TransparentForMouseEvents);   // Klick → Drag
-        h->addWidget(title);
-        h->addStretch(1);
-        auto mkBtn = [&](const QString& glyph, const QString& obj) {
-            auto* b = new QPushButton(glyph);
-            b->setObjectName(obj);
-            b->setFixedSize(46, 34);
-            b->setFocusPolicy(Qt::NoFocus);
-            b->setCursor(Qt::ArrowCursor);
-            h->addWidget(b);
-            return b;
-        };
-        QPushButton* bMin = mkBtn(QString::fromUtf8("─"), "winBtnMin");    // ─
-        QPushButton* bMax = mkBtn(QString::fromUtf8("□"), "winBtnMax");    // ▢
-        QPushButton* bCls = mkBtn(QString::fromUtf8("✕"), "winBtnClose");  // ✕
-        connect(bMin, &QPushButton::clicked, win_, &QWidget::showMinimized);
-        connect(bMax, &QPushButton::clicked, this, [this]{ toggleMax(); });
-        connect(bCls, &QPushButton::clicked, win_, &QWidget::close);
-    }
-    void toggleMax() {
-        if (win_->isMaximized()) win_->showNormal(); else win_->showMaximized();
-    }
+    QWidget*                 titleBar_ = nullptr;   // randlose Leiste (Win/Linux)
+#ifdef Q_OS_WIN
+    bool                     winFrameApplied_ = false;
 protected:
-#ifndef Q_OS_WIN
-    // Linux: Ziehen via startSystemMove, Doppelklick = Max-Toggle.
-    // (Auf Windows erledigt das WM_NCHITTEST/HTCAPTION nativ — inkl. Aero-Snap.)
-    void mousePressEvent(QMouseEvent* e) override {
-        if (e->button() == Qt::LeftButton && childAt(e->pos()) == nullptr)
-            if (auto* wh = win_->windowHandle()) wh->startSystemMove();
+    bool nativeEvent(const QByteArray& et, void* message,
+                     qintptr* result) override {
+        if (et == "windows_generic_MSG" &&
+            winFramelessEvent(this, titleBar_, message, result))
+            return true;
+        return false;
     }
-    void mouseDoubleClickEvent(QMouseEvent* e) override {
-        if (e->button() == Qt::LeftButton) toggleMax();
+    void showEvent(QShowEvent* e) override {
+        QWidget::showEvent(e);
+        if (!winFrameApplied_) { winFrameApplied_ = true; applyWinFrameless(this); }
     }
 #endif
-private:
-    QMainWindow* win_;
 };
-#endif  // !Q_OS_MACOS
+
+// (FramelessTitleBar + Win-Frameless-Helper sind weiter oben definiert — vor
+//  DrivePanel/MultiWindow, damit beide Fenster sie nutzen können.)
 
 #ifdef Q_OS_WIN
 // Native Fenster-Hit-Tests: Ränder → Resize, Titelleisten-Bereich → Caption
 // (Windows macht Drag + Aero-Snap + Doppelklick-Maximieren selbst).
 bool MainWindow::nativeEvent(const QByteArray& et, void* message, qintptr* result) {
-    if (et != "windows_generic_MSG") return false;
-    MSG* m = static_cast<MSG*>(message);
-    if (m->message != WM_NCHITTEST) return false;
-    const qreal dpr = devicePixelRatioF();
-    QPoint g(int(GET_X_LPARAM(m->lParam) / dpr), int(GET_Y_LPARAM(m->lParam) / dpr));
-    const QPoint p = mapFromGlobal(g);
-    const QRect r = rect();
-    const int b = 8;     // Kanten-Greifbreite
-    const int c = 20;    // Ecken-Greifzone (vorher = b → 8×8-Box, kaum zu treffen)
-    const bool L = p.x() < b, R = p.x() >= r.width() - b;
-    const bool T = p.y() < b, B = p.y() >= r.height() - b;
-    const bool Lc = p.x() < c, Rc = p.x() >= r.width() - c;
-    const bool Tc = p.y() < c, Bc = p.y() >= r.height() - c;
-    if (!isMaximized()) {
-        if (Tc && Lc) { *result = HTTOPLEFT;     return true; }
-        if (Tc && Rc) { *result = HTTOPRIGHT;    return true; }
-        if (Bc && Lc) { *result = HTBOTTOMLEFT;  return true; }
-        if (Bc && Rc) { *result = HTBOTTOMRIGHT; return true; }
-        if (L)        { *result = HTLEFT;        return true; }
-        if (R)        { *result = HTRIGHT;       return true; }
-        if (T)        { *result = HTTOP;         return true; }
-        if (B)        { *result = HTBOTTOM;      return true; }
-    }
-    // Titelleiste oben (aber nicht über den Buttons) → Caption / Drag.
-    if (titleBar_ && p.y() >= 0 && p.y() < titleBar_->height() &&
-        p.x() >= 0 && p.x() < r.width()) {
-        if (!qobject_cast<QPushButton*>(childAt(p))) { *result = HTCAPTION; return true; }
-    }
-    return false;   // sonst HTCLIENT
+    if (et == "windows_generic_MSG" &&
+        winFramelessEvent(this, titleBar_, message, result))
+        return true;
+    return false;
+}
+void MainWindow::showEvent(QShowEvent* e) {
+    QMainWindow::showEvent(e);
+    // Erst nach Qt's Fenster-Setup WS_THICKFRAME setzen (sonst überschreibt Qt
+    // es) → randlos UND resizebar. Genau einmal.
+    if (!winFrameApplied_) { winFrameApplied_ = true; applyWinFrameless(this); }
 }
 #endif
 
@@ -1044,7 +1126,7 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
     // Randlose, app-gestylte Titelleiste statt der nativen (Win/Linux).
     // Die (versteckte) Menüleiste wird dadurch ersetzt; Aktionen laufen eh
     // über den ☰-Button + globale Shortcuts.
-    titleBar_ = new FramelessTitleBar(this);
+    titleBar_ = new FramelessTitleBar(this, "CD-Ripper → Navidrome");
     setMenuWidget(titleBar_);
 #endif
 
