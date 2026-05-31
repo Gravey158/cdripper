@@ -587,10 +587,59 @@ public:
     }
     ~DrivePanel() override {
         prevStop_ = true;
+        if (scanStop_) scanStop_->store(true);
         if (prevThr_.joinable()) prevThr_.join();
+        if (scanThr_.joinable()) scanThr_.join();
     }
     void start() { if (!ctl_->running()) ctl_->start(cfg_, false); }
     void stop()  { ctl_->requestStop(); }
+    // Standalone Disc-Qualitäts-Scan für dieses Panel (füllt den Ring live).
+    // Eigener Thread + Stop-Flag, unabhängig vom Rip/Preview; pausiert die
+    // Auto-Cover-Vorschau via scanBusy_ (sonst Drive-Poll-Kollision).
+    void scan() {
+        if (ctl_->running() || scanBusy_.load()) return;
+        std::string id;
+        try { id = cdr::probe_disc_id(dev_); } catch (...) { id.clear(); }
+        if (id.empty()) { cap_->setText("keine Disc zum Scannen"); return; }
+        scanBusy_ = true;
+        cap_->setText("Scan läuft …");
+        std::string dev = dev_;
+        int dens = cfg_.scan_density;
+        if (scanStop_) scanStop_->store(true);
+        scanStop_ = std::make_shared<std::atomic<bool>>(false);
+        auto stopF = scanStop_;
+        if (scanThr_.joinable()) scanThr_.join();
+        scanThr_ = std::thread([this, dev, dens, stopF] {
+            int leadout = 0;
+            try {                                   // Disc-Geometrie VOR dem Scan
+                cdr::DiscIdent di = cdr::read_disc_ident(dev);
+                std::istringstream ts(di.toc); int a, b;
+                if (ts >> a >> b >> leadout && leadout < 0) leadout = 0;
+            } catch (...) {}
+            QMetaObject::invokeMethod(this, [this, leadout] {
+                if (leadout > 0) disc_->beginScan(0, leadout);
+            }, Qt::QueuedConnection);
+            try {
+                cdr::disc_probe(dev,
+                    [stopF] { return stopF->load(); },
+                    [this](int lba, int st, long) {            // Live-Zelle
+                        QMetaObject::invokeMethod(this, [this, lba, st] {
+                            disc_->addCell(lba, st);
+                        }, Qt::QueuedConnection);
+                    },
+                    dens,
+                    [this](int lba) {                          // Live-Cursor
+                        QMetaObject::invokeMethod(this, [this, lba] {
+                            disc_->setCursor(lba);
+                        }, Qt::QueuedConnection);
+                    });
+            } catch (...) {}
+            QMetaObject::invokeMethod(this, [this] {
+                cap_->setText("Scan fertig");
+                scanBusy_ = false;
+            }, Qt::QueuedConnection);
+        });
+    }
     Controller* controller() const { return ctl_; }
     QString     tag() const { return tag_; }
     std::string device() const { return dev_; }
@@ -604,7 +653,7 @@ private:
                 Qt::KeepAspectRatio, Qt::SmoothTransformation));
     }
     void previewTick() {
-        if (ctl_->running() || prevBusy_.load()) return;
+        if (ctl_->running() || prevBusy_.load() || scanBusy_.load()) return;
         std::string id;
         try { id = cdr::probe_disc_id(dev_); } catch (...) { id.clear(); }
         if (id.empty()) {
@@ -684,6 +733,9 @@ private:
     std::atomic<bool> prevBusy_{false};
     std::atomic<bool> prevStop_{false};
     std::thread       prevThr_;
+    std::atomic<bool> scanBusy_{false};
+    std::thread       scanThr_;
+    std::shared_ptr<std::atomic<bool>> scanStop_;
 };
 
 class MultiWindow : public QWidget {
@@ -699,9 +751,11 @@ public:
         hdr_ = new QLabel;
         bar->addWidget(hdr_);
         bar->addStretch(1);
+        auto* scanB  = new QPushButton("⊙  Alle scannen");
         auto* startB = new QPushButton("▶  Alle starten");
         startB->setProperty("primary", true);
         auto* stopB  = new QPushButton("■  Alle stoppen");
+        bar->addWidget(scanB);
         bar->addWidget(startB);
         bar->addWidget(stopB);
         root->addLayout(bar);
@@ -728,6 +782,8 @@ public:
         log_->setMaximumBlockCount(4000);
         log_->setMaximumHeight(120);
         root->addWidget(log_, 1);
+        connect(scanB, &QPushButton::clicked, this,
+            [this] { for (auto* p : panels_) p->scan(); });
         connect(startB, &QPushButton::clicked, this,
             [this] { for (auto* p : panels_) p->start(); });
         connect(stopB, &QPushButton::clicked, this,

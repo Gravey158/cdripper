@@ -6,6 +6,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <filesystem>
 #ifdef _WIN32
 #  include <io.h>       // _setmode, _fileno
 #  include <fcntl.h>    // _O_BINARY
@@ -48,6 +49,22 @@ static void usage(const char* a0) {
 }
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    // MSYS2/OpenSSL sucht seinen CA-Store relativ zur libcrypto-DLL — aus einem
+    // beliebigen Install-Verzeichnis (dist/MSI, NICHT /mingw64) zeigt das ins
+    // Leere → JEDER HTTPS-Call (MusicBrainz/CoverArtArchive/CDDB) scheitert mit
+    // „error adding trust anchors" (curl 77). Fix: CA-Bundle liegt neben der
+    // EXE; via SSL_CERT_FILE global an OpenSSL bekanntmachen (überschreibt den
+    // kaputten relocatable Default-Pfad).
+    if (!std::getenv("SSL_CERT_FILE")) {
+        std::error_code _ec;
+        std::filesystem::path _ca =
+            std::filesystem::path(cdr::self_exe_path()).parent_path()
+            / "curl-ca-bundle.crt";
+        if (std::filesystem::exists(_ca, _ec))
+            _putenv_s("SSL_CERT_FILE", _ca.string().c_str());
+    }
+#endif
     // Subprozess-Modus: ganz früh abfangen, vor Config/curl/GUI.
 #ifdef _WIN32
     // Der Worker schreibt sein Zeilen-Protokoll über stdout in die Pipe der
