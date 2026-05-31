@@ -19,6 +19,13 @@
 #include <csignal>
 #include <fcntl.h>
 #ifdef _WIN32
+#  ifndef NOMINMAX
+#    define NOMINMAX        // sonst min/max-Makros aus windows.h vs. std::min/max
+#  endif
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <windows.h>     // CreatePipe/CreateProcessW/PeekNamedPipe/HANDLE …
 #  include <process.h>     // _spawnvp, _P_WAIT
 #  include <io.h>
 #else
