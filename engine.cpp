@@ -1776,15 +1776,43 @@ Album placeholder_album(int n) {
     return a;
 }
 
+// Release-Group-MBID zu einer Release-MBID — für den CAA-Cover-Fallback:
+// viele einzelne Releases (v.a. Regional-Pressungen aus der Titelsuche) haben
+// kein eigenes Front-Cover, die Release-Group aber schon.
+static std::string mb_release_group_id(const std::string& rid,
+                                       const std::string& ua) {
+    if (rid.empty()) return "";
+    long code = 0;
+    auto body = http_get("https://musicbrainz.org/ws/2/release/" + rid +
+                         "?fmt=json&inc=release-groups", ua, code);
+    std::this_thread::sleep_for(std::chrono::seconds(1));   // MB-Ratelimit (1/s)
+    if (!body || code != 200) return "";
+    try {
+        json j = json::parse(*body);
+        if (j.contains("release-group"))
+            return jstr(j["release-group"], "id");
+    } catch (...) {}
+    return "";
+}
+
 bool fetch_cover(const std::string& rid, const std::string& ua,
                  const fs::path& dir, fs::path& out) {
     if (rid.empty()) return false;
     fs::path cov = dir / "cover.jpg";
-    const std::string base = "https://coverartarchive.org/release/" + rid;
     // Größer zuerst: 1200px (guter Kompromiss), dann Original, dann 500px.
-    if (http_download(base + "/front-1200", ua, cov) ||
-        http_download(base + "/front",      ua, cov) ||
-        http_download(base + "/front-500",  ua, cov)) {
+    auto try_base = [&](const std::string& base) {
+        return http_download(base + "/front-1200", ua, cov) ||
+               http_download(base + "/front",      ua, cov) ||
+               http_download(base + "/front-500",  ua, cov);
+    };
+    if (try_base("https://coverartarchive.org/release/" + rid)) {
+        out = cov;
+        return true;
+    }
+    // Fallback: Release ohne eigenes Cover → Cover der Release-Group probieren.
+    std::string rgid = mb_release_group_id(rid, ua);
+    if (!rgid.empty() &&
+        try_base("https://coverartarchive.org/release-group/" + rgid)) {
         out = cov;
         return true;
     }
