@@ -626,12 +626,28 @@ private:
             QStringList tl;                          // Trackliste (Titel)
             try {
                 cdr::DiscIdent di = cdr::read_disc_ident(dev);
-                cdr::Album al; bool have = false;
+                cdr::Album al; bool have = false;     // volle Kette wie Hauptfenster
                 try {
                     auto c = cdr::mb_release_candidates(di.id, ua, di.toc);
                     if (!c.empty()) { al = c[0]; have = true; }
                 } catch (...) {}
+                if (!have) {                           // CDDB-Fallback
+                    try { auto cd = cdr::cddb_lookup(di.toc, ua);
+                          if (cd) { al = *cd; have = true; } } catch (...) {}
+                }
+                if (!have) {                           // CD-TEXT-Fallback
+                    auto c = cdr::cdtext_lookup(dev, di.toc_tracks);
+                    if (c) { al = *c; have = true; }
+                }
                 if (!have) al = cdr::placeholder_album(di.toc_tracks);
+                // Cover-Fallback: echter Treffer (CD-TEXT/CDDB) ohne MB-Release-ID
+                // → per Titelsuche eine Release finden, nur fürs Cover.
+                if (have && al.mb_release_id.empty() &&
+                    !al.artist.empty() && !al.title.empty()) {
+                    try { auto hits = cdr::mb_search_releases(al.artist, al.title, ua);
+                          if (!hits.empty()) al.mb_release_id = hits[0].mbid;
+                    } catch (...) {}
+                }
                 at = QString::fromStdString(al.title);
                 aa = QString::fromStdString(al.artist);
                 for (const auto& trk : al.tracks)
@@ -866,18 +882,21 @@ bool MainWindow::nativeEvent(const QByteArray& et, void* message, qintptr* resul
     QPoint g(int(GET_X_LPARAM(m->lParam) / dpr), int(GET_Y_LPARAM(m->lParam) / dpr));
     const QPoint p = mapFromGlobal(g);
     const QRect r = rect();
-    const int b = 8;
+    const int b = 8;     // Kanten-Greifbreite
+    const int c = 20;    // Ecken-Greifzone (vorher = b → 8×8-Box, kaum zu treffen)
     const bool L = p.x() < b, R = p.x() >= r.width() - b;
     const bool T = p.y() < b, B = p.y() >= r.height() - b;
+    const bool Lc = p.x() < c, Rc = p.x() >= r.width() - c;
+    const bool Tc = p.y() < c, Bc = p.y() >= r.height() - c;
     if (!isMaximized()) {
-        if (T && L) { *result = HTTOPLEFT;     return true; }
-        if (T && R) { *result = HTTOPRIGHT;    return true; }
-        if (B && L) { *result = HTBOTTOMLEFT;  return true; }
-        if (B && R) { *result = HTBOTTOMRIGHT; return true; }
-        if (L)      { *result = HTLEFT;        return true; }
-        if (R)      { *result = HTRIGHT;       return true; }
-        if (T)      { *result = HTTOP;         return true; }
-        if (B)      { *result = HTBOTTOM;      return true; }
+        if (Tc && Lc) { *result = HTTOPLEFT;     return true; }
+        if (Tc && Rc) { *result = HTTOPRIGHT;    return true; }
+        if (Bc && Lc) { *result = HTBOTTOMLEFT;  return true; }
+        if (Bc && Rc) { *result = HTBOTTOMRIGHT; return true; }
+        if (L)        { *result = HTLEFT;        return true; }
+        if (R)        { *result = HTRIGHT;       return true; }
+        if (T)        { *result = HTTOP;         return true; }
+        if (B)        { *result = HTBOTTOM;      return true; }
     }
     // Titelleiste oben (aber nicht über den Buttons) → Caption / Drag.
     if (titleBar_ && p.y() >= 0 && p.y() < titleBar_->height() &&
@@ -1738,6 +1757,18 @@ void MainWindow::discWatch() {
                 clog("Vorschau: KEIN Treffer (MB/CDDB/CD-TEXT) → Platzhalter. "
                      "Tipp: Aktion → 'Titel manuell suchen' / 'per Klang "
                      "erkennen'.");
+            }
+            // Cover-Fallback: Treffer aus CD-TEXT/CDDB hat keine MB-Release-ID
+            // → per Titelsuche eine Release finden, nur fürs Cover.
+            if (have && al.mb_release_id.empty() &&
+                !al.artist.empty() && !al.title.empty()) {
+                try {
+                    auto hits = cdr::mb_search_releases(al.artist, al.title, ua);
+                    if (!hits.empty()) {
+                        al.mb_release_id = hits[0].mbid;
+                        clog("Vorschau: Cover-Quelle via Titelsuche (MB).");
+                    }
+                } catch (...) {}
             }
             std::string cov;
             try {
