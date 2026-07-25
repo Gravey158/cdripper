@@ -26,6 +26,12 @@
   <developer_name>Dennis</developer_name>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="1.9.28" date="2026-07-25">
+      <description>
+        <p>Bei Doppel-Alben konnte die falsche Disc erkannt werden: Wenn der Abgleich über die eindeutige Disc-Kennung fehlschlug und die Suche über das Inhaltsverzeichnis einsprang, wurde schlicht das erste Medium mit passender Titelzahl genommen. Haben beide CDs gleich viele Titel — bei „Bravo Hits 39" je zwanzig —, bekam CD 2 die Titel von CD 1 und wurde als Disc 1 abgelegt. Jetzt werden zusätzlich die Titel-Längen aus dem Inhaltsverzeichnis mit den Medien verglichen; das ist praktisch eindeutig (im Beispiel: Abweichung 0 Sekunden zur richtigen Disc gegenüber neuneinhalb Minuten zur falschen). Liefert die Suche Disc-Kennungen mit, haben die weiterhin Vorrang.</p>
+        <p>Dazu die Ursache, warum überhaupt auf die unsichere Suche zurückgefallen wurde: MusicBrainz erlaubt nur eine Anfrage pro Sekunde und antwortet sonst mit einer Sperre — genau das passiert, wenn direkt nach einer fertigen CD die nächste eingelegt wird. Der exakte Abgleich unternimmt jetzt bis zu drei Anläufe mit wachsender Pause, bevor er aufgibt.</p>
+      </description>
+    </release>
     <release version="1.9.27" date="2026-07-25">
       <description>
         <p>Beim Melden an den CD-Zustands-Zensus wird jetzt auch die Disc-Nummer im Set übertragen. Damit lassen sich die Discs einer Box dort auseinanderhalten — bisher standen etwa die drei Discs der Queen-Sammlung dreimal wortgleich in der Liste.</p>

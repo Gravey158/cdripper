@@ -1405,6 +1405,15 @@ static std::optional<Album> parse_release(const json& rel, const json& med) {
     return a;
 }
 
+// Trägt dieses Medium wirklich unsere Disc-ID? (medium_for fällt notfalls auf
+// das erste Medium zurück — hier lässt sich das unterscheiden.)
+static bool medium_has_disc(const json& m, const std::string& discid) {
+    if (!m.contains("discs")) return false;
+    for (const auto& d : m["discs"])
+        if (jstr(d, "id") == discid) return true;
+    return false;
+}
+
 // Findet das Medium einer Release, dessen Disc unsere discid trägt (sonst [0]).
 static const json* medium_for(const json& rel, const std::string& discid) {
     if (!rel.contains("media")) return nullptr;
@@ -1416,17 +1425,62 @@ static const json* medium_for(const json& rel, const std::string& discid) {
     return rel["media"].empty() ? nullptr : &rel["media"][0];
 }
 
-// Fuzzy: kein Disc-ID-Treffer → Medium mit passender Trackzahl wählen.
-static const json* medium_by_tracks(const json& rel, int ntr) {
+// Track-Längen (ms) aus dem TOC-String "first last leadout off1 off2 …".
+// Sektoren → ms: 75 Sektoren = 1 s.
+static std::vector<int> toc_track_ms(const std::string& toc) {
+    std::istringstream is(toc);
+    std::vector<long long> v; long long x;
+    while (is >> x) v.push_back(x);
+    if (v.size() < 4) return {};
+    const long long first = v[0], last = v[1], leadout = v[2];
+    if (first < 1 || last < first) return {};
+    std::vector<long long> offs(v.begin() + 3, v.end());
+    if ((long long)offs.size() != last - first + 1) return {};
+    std::vector<int> out;
+    out.reserve(offs.size());
+    for (size_t i = 0; i < offs.size(); ++i) {
+        const long long end = (i + 1 < offs.size()) ? offs[i + 1] : leadout;
+        out.push_back((int)((end - offs[i]) * 1000 / 75));
+    }
+    return out;
+}
+
+// Fuzzy: kein Disc-ID-Treffer → passendes Medium wählen.
+//
+// Die Trackzahl allein reicht dafür nicht: Bei Doppel-Alben haben beide
+// Discs oft exakt gleich viele Titel (Bravo Hits 39: 20 und 20). Die alte
+// Fassung nahm dann immer das erste Medium — dadurch bekam CD 2 die Titel
+// von CD 1 und wurde als „1-01…" abgelegt. Deshalb zusätzlich die
+// Track-LÄNGEN aus dem TOC gegen die Medien halten; das ist praktisch
+// eindeutig, weil zwei Discs kaum je dieselbe Längenfolge haben.
+static const json* medium_by_tracks(const json& rel, int ntr,
+                                    const std::vector<int>& want_ms) {
     if (!rel.contains("media") || rel["media"].empty()) return nullptr;
+    const json* best = nullptr;
+    long long best_diff = -1;
     for (const auto& m : rel["media"]) {
-        int tc = (m.contains("tracks") && m["tracks"].is_array())
+        const int tc = (m.contains("tracks") && m["tracks"].is_array())
                  ? (int)m["tracks"].size()
                  : (m.contains("track-count") && m["track-count"].is_number()
                     ? m["track-count"].get<int>() : -1);
-        if (ntr > 0 && tc == ntr) return &m;
+        if (ntr > 0 && tc != ntr) continue;          // Trackzahl muss passen
+        if (want_ms.empty() || !m.contains("tracks") ||
+            !m["tracks"].is_array() || m["tracks"].size() != want_ms.size()) {
+            if (!best) best = &m;                    // ohne Längen: erstes
+            continue;
+        }
+        long long diff = 0;
+        size_t i = 0;
+        for (const auto& t : m["tracks"]) {
+            long long len = (t.contains("length") && t["length"].is_number())
+                            ? t["length"].get<long long>() : -1;
+            // Fehlt eine Länge, zählt der Track neutral (keine Strafe).
+            if (len > 0) diff += std::llabs(len - (long long)want_ms[i]);
+            ++i;
+        }
+        if (best_diff < 0 || diff < best_diff) { best_diff = diff; best = &m; }
     }
-    return &rel["media"][0];
+    return best ? best : &rel["media"][0];
 }
 
 // MusicBrainz „CD stub": nutzergemeldete, inoffizielle Tracklist (kein
@@ -1466,9 +1520,21 @@ std::vector<Album> mb_release_candidates(const std::string& discid,
     std::string url = "https://musicbrainz.org/ws/2/discid/" + discid +
                       "?fmt=json&inc=recordings+artist-credits+genres+"
                       "labels+release-groups";
+    // MusicBrainz lässt nur eine Anfrage pro Sekunde zu und antwortet bei
+    // Überschreitung mit 503. Genau das passiert, wenn direkt nach einer
+    // fertigen CD die nächste eingelegt wird: Der exakte Disc-ID-Abgleich
+    // scheitert, es bleibt nur die TOC-Suche — und die kann bei Doppel-Alben
+    // die falsche Disc erwischen. Deshalb hier bis zu drei Anläufe mit
+    // wachsender Pause, bevor wir zurückfallen.
     long code = 0;
-    auto body = http_get(url, ua, code);
-    std::this_thread::sleep_for(std::chrono::seconds(1));
+    std::optional<std::string> body;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        body = http_get(url, ua, code);
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        if (body && code == 200) break;
+        if (code != 503 && code != 429 && code != 0) break;   // echter Fehler
+        std::this_thread::sleep_for(std::chrono::seconds(2 + attempt * 2));
+    }
     if (body && code == 200) {
         json j;
         try { j = json::parse(*body); } catch (...) { j = json(); }
@@ -1517,9 +1583,15 @@ std::vector<Album> mb_release_candidates(const std::string& discid,
             int first = 0, last = 0;
             std::sscanf(toc.c_str(), "%d %d", &first, &last);
             int ntr = (first > 0 && last >= first) ? last - first + 1 : 0;
+            const std::vector<int> want_ms = toc_track_ms(toc);
             if (fj.contains("releases"))
                 for (const auto& r : fj["releases"]) {
-                    const json* m = medium_by_tracks(r, ntr);
+                    // Falls die Fuzzy-Antwort doch Disc-IDs mitliefert, hat
+                    // der exakte Treffer Vorrang vor jeder Heuristik.
+                    const json* m = medium_for(r, discid);
+                    if (!m || !m->contains("discs") ||
+                        !medium_has_disc(*m, discid))
+                        m = medium_by_tracks(r, ntr, want_ms);
                     if (!m) continue;
                     if (auto a = parse_release(r, *m))
                         out.push_back(std::move(*a));
@@ -1885,7 +1957,7 @@ std::optional<Album> mb_release_by_id(const std::string& mbid, int want_tracks,
     if (!body || code != 200) return std::nullopt;
     json r;
     try { r = json::parse(*body); } catch (...) { return std::nullopt; }
-    const json* m = medium_by_tracks(r, want_tracks);
+    const json* m = medium_by_tracks(r, want_tracks, {});
     if (!m) return std::nullopt;
     return parse_release(r, *m);
 }
@@ -1938,7 +2010,7 @@ std::optional<Album> mb_release_enriched(const std::string& mbid, int want_track
     if (!body || code != 200) return std::nullopt;
     json r;
     try { r = json::parse(*body); } catch (...) { return std::nullopt; }
-    const json* m = medium_by_tracks(r, want_tracks);
+    const json* m = medium_by_tracks(r, want_tracks, {});
     if (!m) return std::nullopt;
     auto pa = parse_release(r, *m);
     if (!pa) return std::nullopt;
