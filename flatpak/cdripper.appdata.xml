@@ -26,6 +26,12 @@
   <developer_name>Dennis</developer_name>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="1.9.24" date="2026-07-25">
+      <description>
+        <p>Cover von Hand setzen — auch im Multi-Laufwerk-Fenster: Ein Klick auf das Coverfeld einer Disc-Karte öffnet ein Menü mit „Cover aus Datei wählen" und „Cover erneut suchen". Bisher gab es diese Möglichkeit nur im Einzel-Fenster; hatte das Cover Art Archive für eine Ausgabe kein Bild, blieb die Karte zwangsläufig leer. Ein von Hand gesetztes Cover wandert auch in die gerippten Dateien.</p>
+        <p>Streifen im Hintergrund: Das Rauschen gegen die Farbstufen wird jetzt zum Schluss über die fertige Fläche gelegt. Vorher steckte es nur in den einzelnen Ebenen — beim Überblenden der Farbwolken wurde erneut auf ganze Farbwerte gerundet, und genau dabei entstanden die Kanten neu.</p>
+      </description>
+    </release>
     <release version="1.9.23" date="2026-07-25">
       <description>
         <p>Der Interpret wurde unter langen Albumtiteln abgeschnitten („Viva la Vida or Death and All His Friends" braucht zwei Zeilen, „Coldplay" fiel darunter aus dem Feld). Das Textfeld ist jetzt hoch genug für beides, und überlange Titel werden mit Auslassungspunkten gekürzt statt beschnitten.</p>

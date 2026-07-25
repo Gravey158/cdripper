@@ -21,6 +21,8 @@
 #include <QGraphicsBlurEffect>
 #include <QMouseEvent>
 #include <QFileDialog>
+#include <QFileInfo>
+#include <QCursor>
 #include <QFormLayout>
 #include <QFrame>
 #include <QGroupBox>
@@ -1057,6 +1059,15 @@ public:
                              kCoverSide + kCoverSide / 3 + 10 + 2 * kGlowPad);
         cover_->setAlignment(Qt::AlignCenter);
         cover_->setText("kein\nCover");
+        // Cover anklickbar: Menü zum Nachlegen von Hand. Für manche Ausgaben
+        // hat das Cover Art Archive schlicht kein Bild („Free the Spirit —
+        // Pan from Paradise, Vol. 2"); im Multi-Fenster gab es bisher gar
+        // keinen Weg, dann eins zu setzen — nur das Einzel-Fenster hatte
+        // Cover-Knöpfe.
+        cover_->setCursor(Qt::PointingHandCursor);
+        cover_->setToolTip(QString::fromUtf8(
+            "Klicken: Cover von Hand setzen oder erneut suchen."));
+        cover_->installEventFilter(this);
         // Farbiger, atmender Glow rund ums Cover in der Laufwerksfarbe
         // (blurRadius wird vom Anim-Timer sanft pulsiert → „lebt").
         // Kein QGraphicsDropShadowEffect mehr am Cover: der Glow steckt jetzt
@@ -1230,8 +1241,9 @@ public:
     ~DrivePanel() override {
         prevStop_ = true;
         if (scanStop_) scanStop_->store(true);
-        if (prevThr_.joinable()) prevThr_.join();
-        if (scanThr_.joinable()) scanThr_.join();
+        if (prevThr_.joinable())  prevThr_.join();
+        if (scanThr_.joinable())  scanThr_.join();
+        if (coverThr_.joinable()) coverThr_.join();
     }
     // once=false → Dauerlauf (Turbo): nach jeder CD auswerfen, auf die
     // nächste warten, weiter. once=true → nur die eingelegte CD.
@@ -1390,6 +1402,68 @@ private:
             if (onLog) onLog(m);
         }, Qt::QueuedConnection);
     }
+    // Klick aufs Cover-Feld → kleines Menü (s. Konstruktor).
+    bool eventFilter(QObject* o, QEvent* e) override {
+        if (o == cover_ && e->type() == QEvent::MouseButtonRelease) {
+            showCoverMenu();
+            return true;
+        }
+        return QWidget::eventFilter(o, e);
+    }
+    void showCoverMenu() {
+        QMenu m(this);
+        m.addAction(QString::fromUtf8("Cover aus Datei wählen …"), this,
+                    [this] { pickCoverFile(); });
+        m.addAction(QString::fromUtf8("Cover erneut suchen"), this,
+                    [this] { refetchCover(); });
+        m.exec(QCursor::pos());
+    }
+    // Cover von der Platte übernehmen: sofort anzeigen und — falls gerade
+    // gerippt wird — an die Pipeline geben, damit es in die Dateien wandert.
+    void pickCoverFile() {
+        const QString f = QFileDialog::getOpenFileName(
+            this, QString::fromUtf8("Cover-Bild für %1 wählen").arg(tag_),
+            QString(), "Bilder (*.jpg *.jpeg *.png *.webp);;Alle Dateien (*)");
+        if (f.isEmpty()) return;
+        QPixmap pm(f);
+        if (pm.isNull()) { plog("Bild konnte nicht gelesen werden."); return; }
+        buildCoverFrames(pm);
+        coverAccent_ = coverAccentColor(pm, accent_);
+        ctl_->setCover(f);
+        plog("Cover von Hand gesetzt: " + QFileInfo(f).fileName());
+    }
+    // Nochmal im Cover Art Archive nachsehen (inkl. der weiteren Ausgaben
+    // desselben Albums) — z. B. wenn beim ersten Versuch das Netz klemmte.
+    void refetchCover() {
+        if (lastAlbum_.title.empty() && lastAlbum_.artist.empty()) {
+            plog("Noch keine Metadaten — erst Disc erkennen lassen.");
+            return;
+        }
+        if (coverBusy_.exchange(true)) return;
+        plog("Suche Cover erneut …");
+        cdr::Album al = lastAlbum_;
+        std::string ua = cfg_.mb_useragent, tmp = cfg_.tmpdir, dev = dev_;
+        if (coverThr_.joinable()) coverThr_.join();
+        coverThr_ = std::thread([this, al, ua, tmp, dev] {
+            QString found;
+            try {
+                std::string devtag = dev;
+                auto slash = devtag.find_last_of('/');
+                if (slash != std::string::npos) devtag.erase(0, slash + 1);
+                fs::path d = fs::path(tmp) / ("mpreview-" + devtag);
+                std::error_code ec; fs::create_directories(d, ec);
+                fs::path out;
+                if (cdr::fetch_cover_for_album(al, ua, d, out))
+                    found = QString::fromStdString(out.string());
+            } catch (...) {}
+            QMetaObject::invokeMethod(this, [this, found] {
+                if (found.isEmpty()) plog("Weiterhin kein Cover gefunden.");
+                else { setCover(found); ctl_->setCover(found);
+                       plog("Cover gefunden."); }
+                coverBusy_ = false;
+            }, Qt::QueuedConnection);
+        });
+    }
     // Album/Interpret ins Label — Titel auf zwei Zeilen gekürzt, Interpret
     // auf eine. Ohne das Kürzen schiebt ein sehr langer Titel die
     // Interpreten-Zeile aus dem (fest hohen) Feld heraus.
@@ -1483,6 +1557,7 @@ private:
         prevThr_ = std::thread([this, dev, ua, tmp] {
             QString at, aa, cov, src;
             QStringList tl;                          // Trackliste (Titel)
+            cdr::Album meta;                         // für „Cover erneut suchen"
             try {
                 cdr::DiscIdent di = cdr::read_disc_ident(dev);
                 cdr::Album al; bool have = false;     // volle Kette wie Hauptfenster
@@ -1510,6 +1585,7 @@ private:
                           if (!hits.empty()) al.mb_release_id = hits[0].mbid;
                     } catch (...) {}
                 }
+                meta = al;                          // Stand für Nachschlag
                 at = QString::fromStdString(al.title);
                 aa = QString::fromStdString(al.artist);
                 for (const auto& trk : al.tracks)
@@ -1535,7 +1611,8 @@ private:
             } catch (...) {
                 plog("Disc-Vorschau fehlgeschlagen (Lesefehler?)");
             }
-            QMetaObject::invokeMethod(this, [this, at, aa, cov, tl] {
+            QMetaObject::invokeMethod(this, [this, at, aa, cov, tl, meta] {
+                lastAlbum_ = meta;          // Basis für „Cover erneut suchen"
                 if (!at.isEmpty() || !aa.isEmpty())
                     setAlbumText(at, aa);
                 if (!cov.isEmpty()) setCover(cov);
@@ -1579,6 +1656,10 @@ private:
     std::atomic<bool> prevBusy_{false};
     std::atomic<bool> prevStop_{false};
     std::thread       prevThr_;
+    // Letzte erkannte Metadaten — Basis für „Cover erneut suchen".
+    cdr::Album        lastAlbum_;
+    std::atomic<bool> coverBusy_{false};
+    std::thread       coverThr_;
     std::atomic<bool> scanBusy_{false};
     std::thread       scanThr_;
     std::shared_ptr<std::atomic<bool>> scanStop_;
@@ -1737,6 +1818,12 @@ protected:
             p.drawPixmap(QRectF(bx - r, by - r, r * 2, r * 2), blob_[b],
                          QRectF(blob_[b].rect()));
         }
+        // Feines Rauschen ÜBER die fertige Farbfläche. Der Dither in Basis und
+        // Wolken allein reicht nicht: Beim Überblenden der Wolken wird erneut
+        // auf 8 Bit gerundet, und genau dabei entstehen die Streifen neu. Die
+        // Textur ist statisch (flimmert also nicht) und wird gekachelt — ein
+        // Blit pro Bild.
+        if (!noise_.isNull()) p.drawTiledPixmap(rect(), noise_);
         p.setRenderHint(QPainter::Antialiasing, true);
         // Status-Puls: radialer Fade in die Statusfarbe und wieder zurück.
         // Hüllkurve sin(pi·t): 0→1→0 über kPulseDur Ticks (weicher Herzschlag).
@@ -1797,6 +1884,26 @@ private:
     void rebuildCaches() {
         cacheSize_ = size();
         const int W = std::max(1, width()), H = std::max(1, height());
+        // ── Rausch-Kachel: je Pixel etwas Weiß ODER Schwarz mit sehr kleinem
+        // Alpha, im Mittel neutral. ±5/255 genügt, um die Kanten eines
+        // Verlaufs aufzubrechen, der über die ganze Höhe nur rund sechs
+        // Helligkeitsstufen durchläuft — sichtbar ist das Rauschen nicht.
+        if (noise_.isNull()) {
+            constexpr int N = 128;
+            QImage n(N, N, QImage::Format_ARGB32_Premultiplied);
+            n.fill(Qt::transparent);
+            for (int y = 0; y < N; ++y) {
+                auto* line = reinterpret_cast<QRgb*>(n.scanLine(y));
+                for (int x = 0; x < N; ++x) {
+                    const double r = ditherNoise(x * 31 + 7, y * 17 + 3);
+                    const int a = (int)std::lround(std::abs(r - 0.5) * 10.0);
+                    if (a <= 0) { line[x] = 0; continue; }
+                    line[x] = (r < 0.5) ? qRgba(0, 0, 0, a)          // dunkler
+                                        : qRgba(a, a, a, a);         // heller
+                }
+            }
+            noise_ = QPixmap::fromImage(n);
+        }
         // ── Basis: vertikaler Verlauf mit Dither, volle Auflösung ──────────
         QImage img(W, H, QImage::Format_RGB32);
         const QColor top(0x1a, 0x1e, 0x27), bot(0x14, 0x17, 0x1e);
@@ -1858,6 +1965,7 @@ private:
     static constexpr double kTwinkle   = 0.0208;     // war 0.05
     // Caches (s. rebuildCaches): Basis-Verlauf + Glow-Sprites.
     QPixmap base_;
+    QPixmap noise_;          // statische Rausch-Kachel gegen Banding
     QPixmap blob_[3];
     double  blobR_ = 0;
     QSize   cacheSize_;
