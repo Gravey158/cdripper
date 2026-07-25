@@ -26,6 +26,11 @@
   <developer_name>Dennis</developer_name>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="1.9.27" date="2026-07-25">
+      <description>
+        <p>Beim Melden an den CD-Zustands-Zensus wird jetzt auch die Disc-Nummer im Set übertragen. Damit lassen sich die Discs einer Box dort auseinanderhalten — bisher standen etwa die drei Discs der Queen-Sammlung dreimal wortgleich in der Liste.</p>
+      </description>
+    </release>
     <release version="1.9.26" date="2026-07-25">
       <description>
         <p>Auswerfen klappt jetzt zuverlässig. Bisher hielt die Anwendung den Geräteknoten während des gesamten Laufs geöffnet — ein Überbleibsel: Das Laufwerksobjekt wurde einmal angelegt und durchgereicht, aber seit dem Umbau auf frisches Öffnen bei jeder Abfrage nirgends mehr benutzt. Der Linux-Kernel lehnt den Auswurfbefehl grundsätzlich ab, sobald ein Laufwerk mehr als einmal geöffnet ist. Deshalb ging der Auswurf mal durch und mal nicht — je nachdem, ob zufällig gerade zusätzlich abgefragt wurde. Das Laufwerk wird beim Start nur noch kurz auf Erreichbarkeit geprüft und sofort wieder freigegeben.</p>

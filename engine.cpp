@@ -2869,7 +2869,8 @@ bool registry_submit_condition(const std::string& base_url,
                                const std::string& mb_release_id,
                                int quality, int ar_ok, int ar_total,
                                int damaged, const std::string& kind,
-                               const std::string& ua) {
+                               const std::string& ua,
+                               int disc_no, int disc_total) {
     if (base_url.empty() || disc_id.empty()) return false;
     std::string thumb;                          // CAA front-250, klein
     if (!mb_release_id.empty()) {
@@ -2882,6 +2883,8 @@ bool registry_submit_condition(const std::string& base_url,
     json j = {{"disc_id", disc_id}, {"artist", artist}, {"title", title},
               {"year", year}, {"quality", quality}, {"ar_ok", ar_ok},
               {"ar_total", ar_total}, {"damaged", damaged}, {"kind", kind}};
+    if (disc_no    > 0) j["disc_no"]    = disc_no;
+    if (disc_total > 0) j["disc_total"] = disc_total;
     if (!thumb.empty()) j["thumb_b64"] = thumb;
     long code = 0;
     auto r = http_post_json(reg_base(base_url) + "/api/condition",

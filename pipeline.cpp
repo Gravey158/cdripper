@@ -1318,7 +1318,8 @@ void Pipeline::process_disc(const std::atomic<bool>& stop,
             if (registry_submit_condition(cfg_.registry_url, ae.disc_id,
                     ae.artist, ae.title, ae.year, snap.mb_release_id,
                     ae.quality, ae.ar_ok, ae.ar_total, ae.damaged_tracks,
-                    "rip", cfg_.mb_useragent) && cb_.onLog)
+                    "rip", cfg_.mb_useragent,
+                    snap.disc_number, snap.disc_total) && cb_.onLog)
                 cb_.onLog("CD-Zustand an den Zensus gemeldet.");
         }
     }

@@ -23,7 +23,7 @@ namespace cdr {
 //   PATCH  kleiner Bugfix / kleine Änderung
 // Bei jeder veröffentlichten Änderung hier hochzählen und im lokalen
 // Git-Repo einen passenden Tag setzen (git tag -a vX.Y.Z).
-constexpr const char* VERSION = "1.9.26";
+constexpr const char* VERSION = "1.9.27";
 
 struct Config {
     std::string device        = "/dev/sr0";   // primäres/Single-Laufwerk
@@ -389,7 +389,11 @@ bool registry_submit_condition(const std::string& base_url,
                                const std::string& mb_release_id,
                                int quality, int ar_ok, int ar_total,
                                int damaged, const std::string& kind,
-                               const std::string& ua);
+                               const std::string& ua,
+                               // Disc im Set (0 = unbekannt): erst damit lassen
+                               // sich die Discs einer Box im Zensus
+                               // auseinanderhalten.
+                               int disc_no = 0, int disc_total = 0);
 
 // Laufwerksklappe direkt steuern (ioctl). Best effort.
 bool eject_device(const std::string& device);
