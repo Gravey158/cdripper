@@ -1871,7 +1871,13 @@ private:
     // sechs Helligkeitsstufen durchläuft: ohne Dither liegt alle ~180 Pixel
     // eine harte Kante.
     static inline double ditherNoise(int x, int y) {
-        unsigned h = (unsigned)(x * 73856093) ^ (unsigned)(y * 19349663);
+        // ACHTUNG: durchgehend unsigned rechnen. Mit int lief `x * 73856093`
+        // schon ab x≈30 über — signed overflow ist undefiniertes Verhalten,
+        // und der Optimierer hat daraus bei -O2 Code gemacht, der in
+        // rebuildCaches() über einen ungültigen Zeiger schrieb (Absturz beim
+        // ersten Zeichnen, 1.9.24). Unsigned-Überlauf ist dagegen definiert
+        // (modulo 2^32) — genau das, was ein Hash hier braucht.
+        unsigned h = (unsigned)x * 73856093u ^ (unsigned)y * 19349663u;
         h ^= h >> 13; h *= 1274126177u; h ^= h >> 16;
         return (h & 0xffffu) / 65536.0;                   // [0,1)
     }
@@ -1891,9 +1897,11 @@ private:
         if (noise_.isNull()) {
             constexpr int N = 128;
             QImage n(N, N, QImage::Format_ARGB32_Premultiplied);
+            if (n.isNull()) return;                  // Speicher weg → nichts tun
             n.fill(Qt::transparent);
             for (int y = 0; y < N; ++y) {
                 auto* line = reinterpret_cast<QRgb*>(n.scanLine(y));
+                if (!line) break;                    // niemals blind schreiben
                 for (int x = 0; x < N; ++x) {
                     const double r = ditherNoise(x * 31 + 7, y * 17 + 3);
                     const int a = (int)std::lround(std::abs(r - 0.5) * 10.0);
@@ -1906,6 +1914,7 @@ private:
         }
         // ── Basis: vertikaler Verlauf mit Dither, volle Auflösung ──────────
         QImage img(W, H, QImage::Format_RGB32);
+        if (img.isNull()) return;
         const QColor top(0x1a, 0x1e, 0x27), bot(0x14, 0x17, 0x1e);
         for (int y = 0; y < H; ++y) {
             const double t = H > 1 ? (double)y / (H - 1) : 0.0;
@@ -1913,6 +1922,7 @@ private:
             const double g = top.green() + (bot.green() - top.green()) * t;
             const double b = top.blue()  + (bot.blue()  - top.blue())  * t;
             auto* line = reinterpret_cast<QRgb*>(img.scanLine(y));
+            if (!line) break;
             for (int x = 0; x < W; ++x)
                 line[x] = qRgb(ditherRound(r, x, y),
                                ditherRound(g, x + 977, y),
@@ -1932,9 +1942,11 @@ private:
                                         QColor(0x19,0x9e,0x70) };
         for (int b = 0; b < 3; ++b) {
             QImage sp(S * 2, S * 2, QImage::Format_ARGB32_Premultiplied);
+            if (sp.isNull()) continue;
             sp.fill(Qt::transparent);
             for (int y = 0; y < S * 2; ++y) {
                 auto* line = reinterpret_cast<QRgb*>(sp.scanLine(y));
+                if (!line) break;
                 for (int x = 0; x < S * 2; ++x) {
                     const double dx = (x - S) / (double)S, dy = (y - S) / (double)S;
                     const double d = std::sqrt(dx * dx + dy * dy);

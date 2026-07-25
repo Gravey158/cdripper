@@ -26,6 +26,11 @@
   <developer_name>Dennis</developer_name>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="1.9.25" date="2026-07-25">
+      <description>
+        <p>Absturz beim Start behoben (betraf 1.9.24): Die Berechnung des feinen Rauschens gegen die Farbstufen rechnete mit vorzeichenbehafteten Zahlen und lief dabei über den Wertebereich hinaus. Das ist im C++-Standard undefiniertes Verhalten, und der Compiler erzeugte daraus Code, der beim ersten Zeichnen in ungültigen Speicher schrieb — das Programm beendete sich sofort. Die Rechnung läuft jetzt vorzeichenlos, und alle Bildschleifen prüfen zusätzlich, ob der Speicher wirklich bereitsteht.</p>
+      </description>
+    </release>
     <release version="1.9.24" date="2026-07-25">
       <description>
         <p>Cover von Hand setzen — auch im Multi-Laufwerk-Fenster: Ein Klick auf das Coverfeld einer Disc-Karte öffnet ein Menü mit „Cover aus Datei wählen" und „Cover erneut suchen". Bisher gab es diese Möglichkeit nur im Einzel-Fenster; hatte das Cover Art Archive für eine Ausgabe kein Bild, blieb die Karte zwangsläufig leer. Ein von Hand gesetztes Cover wandert auch in die gerippten Dateien.</p>
