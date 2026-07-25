@@ -125,6 +125,7 @@ private slots:
     void onCoverReady(const QString&);
     // Cover + Ambilight-Stufen ins Label (s. coverFrames_).
     void setCoverFrames(const QPixmap& src);
+    void showMultiWindow();          // Multi-Laufwerk-Fenster öffnen/vorholen
     void onTrackState(int idx, int state, double frac, const QString& msg);
     void onProgress(double elapsed, double eta, int ripped, int uploaded, int total);
     void onMetrics(double ripMBps, double encMBps, double upMBps);

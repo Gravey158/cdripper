@@ -26,6 +26,16 @@
   <developer_name>Dennis</developer_name>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="1.9.20" date="2026-07-25">
+      <description>
+        <p>Flüssiger Hintergrund: Die wandernden Farb-Glows wurden zuletzt nur alle vier Bilder neu berechnet und sprangen dadurch sichtbar im Viertelsekunden-Takt. Sie sind jetzt vorgerenderte Bilder, die pro Frame nur noch verschoben werden — das ist billiger als vorher und läuft mit 25 statt 16 Bildern pro Sekunde.</p>
+        <p>Keine Streifen mehr in den Farbverläufen: Der Hintergrund wird in voller Auflösung erzeugt (vorher halbe, hochskaliert) und mit feinem Rauschen versehen. Damit verschwinden die Stufen, die bei so flachen Verläufen mit 8 Bit pro Farbkanal sonst unvermeidlich sichtbar werden.</p>
+        <p>Der Cover-Glow strahlt weiter und weicher: rundum gleichmäßiger Abfall statt vier gerader Kantenverläufe (die eine erkennbar rechteckige Aura ergaben), größerer Radius und kräftigere Farben, damit auch blasse Bildränder sichtbar leuchten.</p>
+        <p>Disc-Karten werden nicht mehr unten abgeschnitten: Die Höhe des Kartenbereichs richtet sich jetzt laufend nach dem Inhalt, statt einmal beim Anlegen berechnet zu werden — Cover und Trackliste treffen erst Sekunden später ein und machen die Karte höher.</p>
+        <p>Status-Icon in der Taskleiste: Unter KDE/Plasma blieb es unsichtbar, weil der Sandbox der Zugriff auf den StatusNotifier-Dienst fehlte. Mit Rechtsklick öffnet sich ein Menü mit Fenster zeigen, Multi-Laufwerk-Fenster, Start/Stop, Beenden — und „Sofort beenden (erzwingen)".</p>
+        <p>Das Beenden bleibt nicht mehr hängen: Beim Schließen räumen die Hintergrund-Threads auf, können dabei aber in einem Laufwerkszugriff oder einem WebDAV-Upload stecken (dessen Zeitlimit bei zehn Minuten liegt) — das Fenster verschwand, der Prozess lief weiter und musste von Hand abgeschossen werden. Jetzt bekommt das Aufräumen sechs Sekunden, danach beendet sich der Prozess selbst.</p>
+      </description>
+    </release>
     <release version="1.9.19" date="2026-07-25">
       <description>
         <p>Einzelstart pro Laufwerk: Ist „Turbo (Dauerlauf)" ausgeschaltet, hat jetzt jede Disc-Karte im Multi-Fenster einen eigenen ▶-Knopf, der genau die dort eingelegte CD rippt — vorher ließ sich nur über „Alle starten" gemeinsam loslegen. Während ein Rip läuft, ist der Knopf gesperrt; mit eingeschaltetem Turbo bleibt er ausgeblendet.</p>

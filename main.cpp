@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <thread>
 #include <atomic>
+#include <chrono>
 #ifdef _WIN32
 #  include <io.h>       // _setmode, _fileno
 #  include <fcntl.h>    // _O_BINARY
@@ -375,6 +376,28 @@ int main(int argc, char** argv) {
                 padding:8px 16px; border-radius:7px; margin:2px; }
             QTabBar::tab:selected { background:#2b313b; color:#e8eaed; }
         )");
+        // Beenden darf nicht hängenbleiben. Beim Schließen räumen die
+        // Destruktoren auf und joinen dabei ihre Hintergrund-Threads — die
+        // können aber noch mitten in einem Laufwerks-Zugriff (unterbrechbar
+        // erst am Blockende) oder in einem WebDAV-Upload stecken, dessen
+        // curl-Timeout bei 600 s liegt. Ergebnis war: Fenster weg, Prozess
+        // lebt weiter und muss von Hand abgeschossen werden.
+        //
+        // Deshalb: Ab „aboutToQuit" bekommt das Aufräumen kQuitGraceSecs
+        // Sekunden; danach beendet ein Wachhund-Thread den Prozess hart. Zu
+        // dem Zeitpunkt sind Einstellungen und Fenstergeometrie längst
+        // geschrieben — es geht nur noch um Threads, die auf Netz oder
+        // Laufwerk warten.
+        QObject::connect(&app, &QApplication::aboutToQuit, [] {
+            std::thread([] {
+                constexpr int kQuitGraceSecs = 6;
+                std::this_thread::sleep_for(
+                    std::chrono::seconds(kQuitGraceSecs));
+                std::fprintf(stderr, "cdripper: Aufräumen hängt "
+                                     "(Laufwerk/Upload) — harter Abbruch.\n");
+                std::_Exit(0);
+            }).detach();
+        });
         MainWindow w(cfg, once, cfg_path);
         w.show();
         rc = app.exec();

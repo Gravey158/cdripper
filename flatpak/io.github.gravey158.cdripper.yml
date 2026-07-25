@@ -40,6 +40,19 @@ finish-args:
   # Konfig + Archiv-DB liegt unter ~/.var/app/io.github.gravey158.cdripper/config
   # automatisch — kein zusätzlicher Permissions-Eintrag nötig.
   - --talk-name=org.freedesktop.Notifications
+  # Status-Icon in der Taskleiste. Plasma/KDE zeigt Tray-Icons über
+  # StatusNotifierItem: Qt registriert dazu einen eigenen Bus-Namen
+  # org.kde.StatusNotifierItem-<pid>-<n> und meldet ihn beim Watcher an.
+  # Ohne Session-Bus-Zugang liefert QSystemTrayIcon::isSystemTrayAvailable()
+  # in der Sandbox false — es gab schlicht kein Icon.
+  #
+  # Warum der volle Session-Bus und nicht nur --own-name: Der Bus-Name endet
+  # auf „-<pid>-<n>", steht also nicht in einem eigenen Namensraum. Flatpaks
+  # Wildcards greifen aber nur auf Namenselement-Grenzen (org.foo.*), ein
+  # --own-name=org.kde.StatusNotifierItem-* lehnt flatpak-builder als
+  # ungültigen Namen ab. Der PID-Anteil ist zur Bauzeit unbekannt, damit
+  # bleibt nur der Session-Bus. Das ist bei Tray-Apps die übliche Lösung.
+  - --socket=session-bus
 
 cleanup:
   # Header + statische Libs nicht ins Final-Bundle

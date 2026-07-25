@@ -14,6 +14,7 @@
 #include <QToolButton>
 #include <QDialogButtonBox>
 #include <cmath>
+#include <cstdlib>
 
 #include <QElapsedTimer>
 #include <QEvent>
@@ -805,25 +806,50 @@ static QPixmap coverAmbilight(const QPixmap& src, const QSize& inner,
                               int pad, int alpha) {
     if (src.isNull() || pad <= 0 || inner.isEmpty()) return {};
     const int W = inner.width() + pad * 2, H = inner.height() + pad * 2;
-    QImage mini = src.scaled(12, 12, Qt::IgnoreAspectRatio,
-                             Qt::SmoothTransformation).toImage();
+    // Farbquelle: 10x10-Miniatur. Auf diesen 100 Pixeln ist ein kräftiger
+    // Sättigungs-Schub praktisch gratis und macht aus blassen Bildrändern
+    // einen sichtbaren Schein — hochskaliert interpoliert Qt ohnehin alles.
+    QImage mini = src.scaled(10, 10, Qt::IgnoreAspectRatio,
+                             Qt::SmoothTransformation).toImage()
+                     .convertToFormat(QImage::Format_ARGB32);
+    for (int y = 0; y < mini.height(); ++y)
+        for (int x = 0; x < mini.width(); ++x) {
+            QColor c = mini.pixelColor(x, y);
+            int hh, ss, vv; c.getHsv(&hh, &ss, &vv);
+            if (hh < 0) hh = 0;
+            c.setHsv(hh, std::min(255, (int)(ss * 1.45)),
+                         std::min(255, std::max(vv, 110) + 25));
+            mini.setPixelColor(x, y, c);
+        }
     QImage up = mini.scaled(W, H, Qt::IgnoreAspectRatio,
                             Qt::SmoothTransformation)
-                    .convertToFormat(QImage::Format_ARGB32_Premultiplied);
-    QPainter p(&up);
-    p.setCompositionMode(QPainter::CompositionMode_DestinationIn);
-    auto fade = [&](QLinearGradient g, const QRect& r) {
-        g.setColorAt(0.0, QColor(0, 0, 0, 0));      // außen unsichtbar
-        g.setColorAt(1.0, QColor(0, 0, 0, 255));    // innen unverändert
-        p.fillRect(r, g);
-    };
-    fade(QLinearGradient(0, 0, 0, pad),       QRect(0, 0, W, pad));
-    fade(QLinearGradient(0, H, 0, H - pad),   QRect(0, H - pad, W, pad));
-    fade(QLinearGradient(0, 0, pad, 0),       QRect(0, 0, pad, H));
-    fade(QLinearGradient(W, 0, W - pad, 0),   QRect(W - pad, 0, pad, H));
-    p.fillRect(0, 0, W, H, QColor(0, 0, 0, std::clamp(alpha, 0, 255)));
-    p.end();
-    return QPixmap::fromImage(up);
+                    .convertToFormat(QImage::Format_ARGB32);
+    // Hüllkurve: Abstand zum Cover-Rechteck, quadratisch ausgeblendet. Vier
+    // lineare Kanten-Verläufe (die frühere Fassung) ergaben eine erkennbar
+    // rechteckige Aura mit harten Ecken; so strahlt es rundum gleichmäßig aus
+    // und läuft nach außen sauber gegen null.
+    const int ix0 = pad, iy0 = pad;
+    const int ix1 = pad + inner.width(), iy1 = pad + inner.height();
+    QImage out(W, H, QImage::Format_ARGB32_Premultiplied);
+    out.fill(Qt::transparent);
+    const double A = std::clamp(alpha, 0, 255) / 255.0;
+    for (int y = 0; y < H; ++y) {
+        const auto* srcLine = reinterpret_cast<const QRgb*>(up.constScanLine(y));
+        auto* dstLine = reinterpret_cast<QRgb*>(out.scanLine(y));
+        const double dy = y < iy0 ? (iy0 - y) : (y > iy1 ? y - iy1 : 0);
+        for (int x = 0; x < W; ++x) {
+            const double dx = x < ix0 ? (ix0 - x) : (x > ix1 ? x - ix1 : 0);
+            const double d  = std::sqrt(dx * dx + dy * dy) / pad;   // 0…>1
+            if (d >= 1.0) { dstLine[x] = 0; continue; }
+            const double f = (1.0 - d) * (1.0 - d);
+            const int a = (int)std::lround(255.0 * A * f);
+            if (a <= 0) { dstLine[x] = 0; continue; }
+            const QRgb s = srcLine[x];
+            dstLine[x] = qRgba(qRed(s) * a / 255, qGreen(s) * a / 255,
+                               qBlue(s) * a / 255, a);
+        }
+    }
+    return QPixmap::fromImage(out);
 }
 
 // „Bling"-Cover: das Album leicht schräg (Pseudo-3D, wie aufgeklappt) mit
@@ -1432,7 +1458,7 @@ private:
     // Vorgerenderte Cover-Pixmaps mit Ambilight in aufsteigender Deckkraft
     // (s. buildCoverFrames) + aktuell gezeigte Stufe.
     static constexpr int kGlowSteps = 6;
-    static constexpr int kGlowPad   = 20;
+    static constexpr int kGlowPad   = 28;   // Ausstrahlung ums Cover herum
     std::vector<QPixmap> coverFrames_;
     int               coverFrame_ = -1;
     QGraphicsDropShadowEffect* capGlow_ = nullptr;
@@ -1570,7 +1596,7 @@ public:
             if (pulsing_ && ++pulseTick_ >= kPulseDur) pulsing_ = false;
             update();
         });
-        t->start(60);
+        t->start(kTickMs);
     }
     // Status-Puls (PS-UI-Vibe): der Hintergrund faded von seiner Farbe in die
     // Statusfarbe (grün=Erfolg, rot=Fehler) und wieder zurück — ein Herzschlag,
@@ -1585,18 +1611,29 @@ protected:
     void paintEvent(QPaintEvent*) override {
         QPainter p(this);
         const double w = width(), h = height();
-        // Basis + die drei wandernden Farb-Glows sind der teure Teil: vier
-        // Alpha-Blends über die volle Fensterfläche, 17x pro Sekunde. Auf
-        // schwacher Hardware (U-CPU, Software-Raster) frisst das einen ganzen
-        // Kern. Die Glows kriechen aber mit ~0,006 rad/Tick, sind also extrem
-        // träge — deshalb landen sie in einem Cache-Pixmap in halber
-        // Auflösung, das nur jeden kBgEvery-ten Tick neu entsteht. Sichtbar
-        // ist der Unterschied nicht (weiche Radial-Verläufe skalieren
-        // verlustfrei genug), gespart wird ein Vielfaches.
-        if (bg_.isNull() || bgSize_ != size() || tick_ - bgTick_ >= kBgEvery)
-            rebuildBackdrop();
+        // Aufbau in drei Schichten, jede so billig wie möglich:
+        //   1. Basis-Verlauf — ändert sich nie, liegt fertig im Cache (volle
+        //      Auflösung, mit Dither gegen Streifenbildung).
+        //   2. Drei Farb-Glows — je EIN vorgerendertes Sprite, das pro Frame
+        //      nur an eine neue Position geblittet wird. Früher wurden hier
+        //      drei Radial-Verläufe über die ganze Fläche neu berechnet; das
+        //      war so teuer, dass ich sie in einen Cache gelegt hatte, der nur
+        //      alle vier Ticks neu entstand — wodurch die Glows sichtbar im
+        //      240-ms-Takt sprangen („3 fps"). Als Sprite ist das Blitten
+        //      billig genug für jeden einzelnen Frame.
+        //   3. Glitzer live darüber.
+        if (base_.isNull() || cacheSize_ != size()) rebuildCaches();
+        p.drawPixmap(0, 0, base_);
         p.setRenderHint(QPainter::SmoothPixmapTransform, true);
-        p.drawPixmap(rect(), bg_);
+        for (int b = 0; b < 3; ++b) {
+            if (blob_[b].isNull()) continue;
+            const double phb = tick_ * kBlobSpeed + b * 2.1;
+            const double bx = w * (0.5 + 0.42 * std::sin(phb));
+            const double by = h * (0.5 + 0.42 * std::cos(phb * 0.73));
+            const double r  = blobR_;
+            p.drawPixmap(QRectF(bx - r, by - r, r * 2, r * 2), blob_[b],
+                         QRectF(blob_[b].rect()));
+        }
         p.setRenderHint(QPainter::Antialiasing, true);
         // Status-Puls: radialer Fade in die Statusfarbe und wieder zurück.
         // Hüllkurve sin(pi·t): 0→1→0 über kPulseDur Ticks (weicher Herzschlag).
@@ -1613,10 +1650,10 @@ protected:
         // Aufsteigende, funkelnde Glitzer.
         p.setPen(Qt::NoPen);
         for (const auto& s : stars_) {
-            double y = s.y - std::fmod(tick_ * s.speed * 0.0016, 1.0);
+            double y = s.y - std::fmod(tick_ * s.speed * kStarSpeed, 1.0);
             if (y < 0) y += 1.0;
             const double px = s.x * w, py = y * h;
-            const double tw = 0.5 + 0.5 * std::sin(tick_ * 0.05 + s.phase);
+            const double tw = 0.5 + 0.5 * std::sin(tick_ * kTwinkle + s.phase);
             const int a = int(35 + 150 * tw);
             QColor core(210, 226, 255, a);
             QRadialGradient g(QPointF(px, py), s.size * 4);
@@ -1629,46 +1666,88 @@ protected:
         }
     }
 private:
-    // Basis-Verlauf + die drei kreisenden Glows in halber Auflösung in den
-    // Cache malen. Aufrufer: paintEvent, wenn der Cache leer/veraltet ist
-    // oder sich die Fenstergröße geändert hat.
-    void rebuildBackdrop() {
-        bgSize_ = size();
-        bgTick_ = tick_;
-        const int pw = std::max(1, width()  / 2);
-        const int ph = std::max(1, height() / 2);
-        QPixmap pm(pw, ph);
-        QPainter q(&pm);
-        q.setRenderHint(QPainter::Antialiasing, true);
-        const double w = pw, h = ph;
-        QLinearGradient base(0, 0, 0, h);
-        base.setColorAt(0.0, QColor(0x1a, 0x1e, 0x27));
-        base.setColorAt(1.0, QColor(0x14, 0x17, 0x1e));
-        q.fillRect(pm.rect(), base);
-        static const QColor blob[3] = { QColor(0x39,0x87,0xe5),
+    // Deterministisches Dither-Rauschen: ±1 pro Kanal, aus den Koordinaten
+    // gehasht. Ohne das zeigt ein so flacher Verlauf über die volle
+    // Fensterhöhe deutlich sichtbare Streifen — 8 Bit pro Kanal reichen für
+    // knapp 30 Helligkeitsstufen über 700 Pixel schlicht nicht, jede Stufe
+    // wird als Kante wahrgenommen. Das Rauschen bricht die Kanten auf, ohne
+    // dass man es als Rauschen erkennt.
+    static inline int dither(int x, int y) {
+        const unsigned h = (unsigned)(x * 73856093) ^ (unsigned)(y * 19349663);
+        return (int)((h >> 13) % 3) - 1;                  // -1, 0 oder +1
+    }
+    // Basis-Verlauf (statisch) und die drei Glow-Sprites neu erzeugen. Läuft
+    // nur beim ersten Zeichnen und nach Größenänderungen, deshalb dürfen es
+    // hier Pixel-Schleifen sein.
+    void rebuildCaches() {
+        cacheSize_ = size();
+        const int W = std::max(1, width()), H = std::max(1, height());
+        // ── Basis: vertikaler Verlauf mit Dither, volle Auflösung ──────────
+        QImage img(W, H, QImage::Format_RGB32);
+        const QColor top(0x1a, 0x1e, 0x27), bot(0x14, 0x17, 0x1e);
+        for (int y = 0; y < H; ++y) {
+            const double t = H > 1 ? (double)y / (H - 1) : 0.0;
+            const int r = (int)std::lround(top.red()   + (bot.red()   - top.red())   * t);
+            const int g = (int)std::lround(top.green() + (bot.green() - top.green()) * t);
+            const int b = (int)std::lround(top.blue()  + (bot.blue()  - top.blue())  * t);
+            auto* line = reinterpret_cast<QRgb*>(img.scanLine(y));
+            for (int x = 0; x < W; ++x) {
+                const int d = dither(x, y);
+                line[x] = qRgb(std::clamp(r + d, 0, 255),
+                               std::clamp(g + d, 0, 255),
+                               std::clamp(b + d, 0, 255));
+            }
+        }
+        base_ = QPixmap::fromImage(img);
+        // ── Glow-Sprites: je ein weicher Radial-Verlauf mit Alpha-Dither ───
+        // Quadratisch abfallende Hüllkurve (statt linear) — das wirkt wie ein
+        // echtes Leuchten und hat keine sichtbare Außenkante.
+        blobR_ = std::max(W, H) * 0.42;
+        const int S = std::clamp((int)std::lround(blobR_), 64, 512);  // Sprite-Kante/2
+        static const QColor tint[3] = { QColor(0x39,0x87,0xe5),
                                         QColor(0x90,0x85,0xe9),
                                         QColor(0x19,0x9e,0x70) };
         for (int b = 0; b < 3; ++b) {
-            const double phb = tick_ * 0.006 + b * 2.1;
-            const double bx = w * (0.5 + 0.42 * std::sin(phb));
-            const double by = h * (0.5 + 0.42 * std::cos(phb * 0.73));
-            QRadialGradient rg(QPointF(bx, by), w * 0.4);
-            QColor c = blob[b]; c.setAlpha(30); rg.setColorAt(0.0, c);
-            c.setAlpha(0);      rg.setColorAt(1.0, c);
-            q.fillRect(pm.rect(), rg);
+            QImage sp(S * 2, S * 2, QImage::Format_ARGB32_Premultiplied);
+            sp.fill(Qt::transparent);
+            for (int y = 0; y < S * 2; ++y) {
+                auto* line = reinterpret_cast<QRgb*>(sp.scanLine(y));
+                for (int x = 0; x < S * 2; ++x) {
+                    const double dx = (x - S) / (double)S, dy = (y - S) / (double)S;
+                    const double d = std::sqrt(dx * dx + dy * dy);
+                    if (d >= 1.0) { line[x] = 0; continue; }
+                    const double f = (1.0 - d) * (1.0 - d);   // quadratisch aus
+                    int a = (int)std::lround(34.0 * f) + dither(x, y);
+                    a = std::clamp(a, 0, 255);
+                    if (a <= 0) { line[x] = 0; continue; }
+                    // Premultiplied: Farbanteile mit Alpha skalieren.
+                    line[x] = qRgba(tint[b].red()   * a / 255,
+                                    tint[b].green() * a / 255,
+                                    tint[b].blue()  * a / 255, a);
+                }
+            }
+            blob_[b] = QPixmap::fromImage(sp);
         }
-        bg_ = pm;
     }
     struct Star { double x, y, speed, size, phase; };
     std::vector<Star> stars_;
     int tick_ = 0;
-    // Backdrop-Cache (Basis + Glows), s. paintEvent/rebuildBackdrop.
-    QPixmap bg_;
-    QSize   bgSize_;
-    int     bgTick_ = -1000;
-    static constexpr int kBgEvery = 4;     // Cache-Neuaufbau alle 4 Ticks
+    // Zeichen-Takt und die davon abgeleiteten Bewegungs-Konstanten. 40 ms
+    // (25 fps) statt der früheren 60 ms — durch die Sprite-Technik ist ein
+    // Frame billig genug dafür, und die Bewegung wirkt spürbar flüssiger.
+    // Die Faktoren sind gegenüber 60 ms mit 2/3 skaliert, damit Glows,
+    // Glitzer und Funkeln exakt gleich schnell laufen wie vorher.
+    static constexpr int    kTickMs    = 40;
+    static constexpr double kBlobSpeed = 0.004;      // war 0.006 bei 60 ms
+    static constexpr double kStarSpeed = 0.001067;   // war 0.0016
+    static constexpr double kTwinkle   = 0.0333;     // war 0.05
+    // Caches (s. rebuildCaches): Basis-Verlauf + Glow-Sprites.
+    QPixmap base_;
+    QPixmap blob_[3];
+    double  blobR_ = 0;
+    QSize   cacheSize_;
     // Status-Puls-Zustand
-    static constexpr int kPulseDur = 30;   // ~1,8 s bei 60 ms/Tick
+    static constexpr int kPulseDur = 45;   // ~1,8 s bei 40 ms/Tick
     bool   pulsing_   = false;
     int    pulseTick_ = 0;
     QColor pulseColor_{0x35, 0xc7, 0x59};
@@ -1762,6 +1841,7 @@ public:
         // spezifischer als die transparenten Regeln hier.
         colsW->setAttribute(Qt::WA_NoSystemBackground, true);
         colsW->setAutoFillBackground(false);
+        colsW->installEventFilter(this);      // Höhe nachziehen (s. eventFilter)
         sc_ = new QScrollArea;
         auto* sc = sc_;
         sc->setWidget(colsW);
@@ -1895,10 +1975,16 @@ protected:
     // Hält den animierten Hintergrund auf Größe des content-Widgets und
     // ganz nach hinten (hinter den Inhalt).
     bool eventFilter(QObject* o, QEvent* e) override {
+        // Karten-Zone nachziehen, sobald sich der Inhalt ändert. Die Höhe
+        // steht beim Anlegen einer Karte noch nicht fest: Cover und Trackliste
+        // treffen erst Sekunden später ein und machen die Karte höher — mit
+        // einer einmal berechneten Fixhöhe wurde sie dann unten abgeschnitten.
+        if (o == colsW_ && (e->type() == QEvent::LayoutRequest ||
+                            e->type() == QEvent::Resize))
+            syncCardsHeight();
         if (fx_ && e->type() == QEvent::Resize)
             if (auto* w = qobject_cast<QWidget*>(o)) {
-                fx_->setGeometry(w->rect());
-                fx_->lower();
+                if (w != colsW_) { fx_->setGeometry(w->rect()); fx_->lower(); }
             }
         return QWidget::eventFilter(o, e);
     }
@@ -1924,10 +2010,16 @@ private:
     // per Hotplug nachgemeldetes Laufwerk vollständig zu sehen ist.
     void syncCardsHeight() {
         if (!sc_ || !colsW_) return;
-        int h = std::max(140, colsW_->sizeHint().height());
+        // sizeHint deckt den aktuellen Inhalt ab; minimumSizeHint fängt
+        // Karten ab, die (z. B. durch ein gerade geladenes Cover) mehr Platz
+        // verlangen als der Hint meldet.
+        int h = std::max({ 140, colsW_->sizeHint().height(),
+                                colsW_->minimumSizeHint().height() });
         if (auto* hb = sc_->horizontalScrollBar())
-            h += hb->sizeHint().height();
-        sc_->setFixedHeight(h + 6);
+            if (hb->isVisible()) h += hb->sizeHint().height();
+        h += 6;
+        if (sc_->height() == h && sc_->minimumHeight() == h) return;  // nichts zu tun
+        sc_->setFixedHeight(h);
     }
     void addPanel(const std::string& dev) {
         auto* colsW = cols_->parentWidget();
@@ -2433,17 +2525,8 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
         multiBtn->setCursor(Qt::PointingHandCursor);
         multiBtn->setToolTip("Parallel aus mehreren Laufwerken rippen "
             "(je Laufwerk eine eigene Disc)");
-        connect(multiBtn, &QToolButton::clicked, this, [this] {
-            if (!multiWin_) {
-                multiWin_ = new MultiWindow(cfg_, this);
-                multiWin_->setAttribute(Qt::WA_DeleteOnClose);
-                connect(multiWin_, &QObject::destroyed, this,
-                        [this] { multiWin_ = nullptr; });
-            }
-            multiWin_->show();
-            multiWin_->raise();
-            multiWin_->activateWindow();
-        });
+        connect(multiBtn, &QToolButton::clicked, this,
+                [this] { showMultiWindow(); });
         abL->addWidget(multiBtn);
         auto* menuBtn = new QToolButton;
         menuBtn->setText(QString::fromUtf8("☰  Menü"));
@@ -2689,8 +2772,17 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
     connect(sc, &QShortcut::activated, this,
             &MainWindow::onStartStopToggle);
 
-    // Tray-Icon (Indikator + Schnellzugriff)
-    if (QSystemTrayIcon::isSystemTrayAvailable()) {
+    // Tray-Icon (Indikator + Schnellzugriff).
+    //
+    // Bewusst OHNE isSystemTrayAvailable()-Abfrage: Unter Wayland/Plasma
+    // meldet Qt beim Start gern noch „kein Tray" (das Panel bzw. der
+    // StatusNotifierWatcher meldet sich erst kurz danach am Bus an), und dann
+    // gäbe es dauerhaft kein Icon. QSystemTrayIcon verkraftet es, wenn der
+    // Watcher später kommt. Damit das in der Flatpak-Sandbox überhaupt
+    // funktioniert, braucht das Manifest --talk-name=…StatusNotifierWatcher
+    // und --own-name=org.kde.StatusNotifierItem-* — ohne die blieb das Icon
+    // unsichtbar, egal was hier steht.
+    {
         tray_ = new QSystemTrayIcon(
             style()->standardIcon(QStyle::SP_DriveCDIcon), this);
         g_notify_tray = tray_;            // notify() nutzt es plattformübergreifend
@@ -2698,10 +2790,18 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
         auto* tm = new QMenu(this);
         tm->addAction("Fenster zeigen", this, [this] {
             showNormal(); raise(); activateWindow(); });
+        tm->addAction(QString::fromUtf8("Multi-Laufwerk-Fenster…"), this,
+                      [this] { showMultiWindow(); });
+        tm->addSeparator();
         tm->addAction("Start", this, &MainWindow::onStart);
         tm->addAction("Stop",  this, &MainWindow::onStop);
         tm->addSeparator();
         tm->addAction("Beenden", qApp, &QApplication::quit);
+        // Notausgang: beendet den Prozess sofort, ohne auf laufende Threads
+        // zu warten. Nützlich, wenn ein Rip oder ein Upload (curl-Timeout bis
+        // zu 10 Minuten!) das reguläre Aufräumen aufhält.
+        tm->addAction(QString::fromUtf8("Sofort beenden (erzwingen)"),
+                      this, [] { std::_Exit(0); });
         tray_->setContextMenu(tm);
         connect(tray_, &QSystemTrayIcon::activated, this,
             [this](QSystemTrayIcon::ActivationReason r) {
@@ -2836,6 +2936,20 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
     // Jukebox: nach dem Anzeigen automatisch starten (Default AUS via Config).
     if (cfg_.jukebox)
         QTimer::singleShot(400, this, &MainWindow::onStart);
+}
+
+// Multi-Laufwerk-Fenster öffnen bzw. nach vorn holen (Toolbar-Knopf und
+// Tray-Menü nutzen denselben Weg).
+void MainWindow::showMultiWindow() {
+    if (!multiWin_) {
+        multiWin_ = new MultiWindow(cfg_, this);
+        multiWin_->setAttribute(Qt::WA_DeleteOnClose);
+        connect(multiWin_, &QObject::destroyed, this,
+                [this] { multiWin_ = nullptr; });
+    }
+    multiWin_->show();
+    multiWin_->raise();
+    multiWin_->activateWindow();
 }
 
 void MainWindow::closeEvent(QCloseEvent* e) {
