@@ -841,7 +841,12 @@ static QPixmap coverAmbilight(const QPixmap& src, const QSize& inner,
             const double dx = x < ix0 ? (ix0 - x) : (x > ix1 ? x - ix1 : 0);
             const double d  = std::sqrt(dx * dx + dy * dy) / pad;   // 0…>1
             if (d >= 1.0) { dstLine[x] = 0; continue; }
-            const double f = (1.0 - d) * (1.0 - d);
+            // Zwei überlagerte Hüllkurven: ein weit tragender, weicher Schein
+            // (flacher Exponent) plus ein enger Lichtsaum direkt am Bildrand
+            // (steiler Exponent). Eine einzelne quadratische Kurve sah
+            // entweder nach schmalem Rand oder nach Schmiere aus.
+            const double e = 1.0 - d;
+            const double f = 0.55 * std::pow(e, 1.5) + 0.45 * std::pow(e, 4.0);
             const int a = (int)std::lround(255.0 * A * f);
             if (a <= 0) { dstLine[x] = 0; continue; }
             const QRgb s = srcLine[x];
@@ -864,7 +869,8 @@ static QPixmap makeCoverArt(const QPixmap& src, int side,
     const int w = cover.width(), h = cover.height();
     const int reflH = h / 3;            // Spiegelungshöhe
     const int pad   = 10;               // Rand für Neigung/Schatten
-    QPixmap out(w + pad * 2, h + reflH + pad);
+    const int gp    = std::max(0, glowPad);
+    QPixmap out(w + pad * 2 + gp * 2, h + reflH + pad + gp * 2);
     out.fill(Qt::transparent);
     QPainter pt(&out);
     pt.setRenderHint(QPainter::SmoothPixmapTransform, true);
@@ -872,10 +878,17 @@ static QPixmap makeCoverArt(const QPixmap& src, int side,
     // Pseudo-3D: ganz dezenter vertikaler Shear → das Cover „steht" leicht
     // schräg, als wäre es aufgeklappt. Bewusst subtil, damit es lesbar bleibt.
     QTransform tf;
-    tf.translate(pad, 0);
+    tf.translate(pad + gp, gp);
     tf.shear(0.0, -0.05);
     tf.translate(0, h * 0.05);
     pt.setTransform(tf);
+    // Ambilight UNTER dem Cover und mit derselben Neigung — sonst sitzt der
+    // Schein nicht deckungsgleich zum gescherten Bild (links breiter Saum,
+    // rechts kaum einer).
+    if (gp > 0) {
+        QPixmap amb = coverAmbilight(cover, QSize(w, h), gp, glowAlpha);
+        if (!amb.isNull()) pt.drawPixmap(-gp, -gp, amb);
+    }
     pt.drawPixmap(0, 0, cover);
     // Spiegelung: vertikal gespiegeltes Cover mit Alpha-Verlauf (oben ~35 %
     // → unten transparent).
@@ -894,19 +907,7 @@ static QPixmap makeCoverArt(const QPixmap& src, int side,
     }
     pt.drawPixmap(0, h + 3, reflFaded);
     pt.end();
-    if (glowPad <= 0) return out;
-    // Glow als unterster Layer: Das Cover-Rechteck liegt im `out` bei
-    // (pad, 0)…(pad+w, h). Der Ambilight ist um glowPad größer als das Cover,
-    // sein Innenbereich muss also deckungsgleich darüber zu liegen kommen →
-    // Position (pad-glowPad, -glowPad), im verschobenen Gesamtbild (pad, 0).
-    QPixmap withGlow(out.width() + glowPad * 2, out.height() + glowPad * 2);
-    withGlow.fill(Qt::transparent);
-    QPainter gp(&withGlow);
-    gp.setRenderHint(QPainter::SmoothPixmapTransform, true);
-    QPixmap amb = coverAmbilight(cover, QSize(w, h), glowPad, glowAlpha);
-    if (!amb.isNull()) gp.drawPixmap(pad, 0, amb);
-    gp.drawPixmap(glowPad, glowPad, out);
-    return withGlow;
+    return out;
 }
 
 // Dominante, „lebendige" Farbe eines Covers — für Glow/Akzent, der zum Bild
@@ -974,6 +975,27 @@ static QColor coverAccentColor(const QPixmap& src, const QColor& fallback) {
     return best;
 }
 
+// Cover-Rendering als PNG herausschreiben (s. gui.h). Nutzt exakt denselben
+// Weg wie die Disc-Karte, damit das Bild dem entspricht, was man später in
+// der App sieht. Ohne pad/alpha gelten die Werte, die auch die Karte nutzt.
+bool render_cover_preview(const QString& inPath, const QString& outPath,
+                          int side, int pad, int alpha) {
+    QPixmap src(inPath);
+    if (src.isNull()) return false;
+    if (pad   < 0) pad   = 38;
+    if (alpha < 0) alpha = 115;
+    QPixmap art = makeCoverArt(src, side, pad, alpha);
+    if (art.isNull()) return false;
+    // Auf den Karten-Hintergrund legen — der Glow wird gegen #262b33
+    // geblendet, alles andere wäre irreführend.
+    QPixmap out(art.width() + 40, art.height() + 40);
+    out.fill(QColor(0x26, 0x2b, 0x33));
+    QPainter p(&out);
+    p.drawPixmap(20, 20, art);
+    p.end();
+    return out.save(outPath, "PNG");
+}
+
 // Additiv & eigenständig: Single-Drive-MainWindow bleibt unberührt. Eine
 // Spalte je Laufwerk (Cover+Album oben, Live-Disc darunter), eine gemeinsame
 // Rip-Tabelle unten. Je Spalte ein eigener Controller (= eigene Pipeline +
@@ -995,11 +1017,17 @@ public:
         // blendet sich nahtlos ein statt heller als die Box zu wirken.
         setObjectName("drivePanel");
         setAttribute(Qt::WA_StyledBackground, true);
+        // Feste Kartenbreite. Vorher richtete sich die Breite nach dem
+        // breitesten Kind — sobald in der Statuspille „lege nächste CD ein"
+        // stand, wuchs die Karte und schob die Nachbarkarten zur Seite.
+        // Maß gibt das Cover-Feld vor (Cover + Neigung + Ambilight) plus die
+        // Layout-Ränder; alle variablen Texte bekommen unten feste Größen.
+        setFixedWidth(kCardW);
         // Akzentfarbe des Laufwerks als oberer Kartenrand (Basis-QSS aus
         // main.cpp wird hier pro Instanz um den Border ergänzt).
         setStyleSheet(QString(
             "QWidget#drivePanel { background:#262b33; border-radius:12px;"
-            " border-top:3px solid %1; }").arg(accent_.name()));
+            " border:2px solid %1; }").arg(accent_.name()));
         auto* v = new QVBoxLayout(this);
         v->setContentsMargins(10, 10, 10, 10);
         // Kopf: Farbpunkt + Laufwerkspfad + Laufwerks-ID (Hersteller/Modell).
@@ -1011,9 +1039,21 @@ public:
              QString::fromStdString(did).toHtmlEscaped() + "</span>"));
         hd->setAlignment(Qt::AlignHCenter);
         hd->setTextFormat(Qt::RichText);
+        // Kopfzeile als abgerundete, leicht durchscheinende Box — hebt
+        // Laufwerk und Modell vom Karten-Hintergrund ab.
+        hd->setObjectName("panelHead");
+        hd->setStyleSheet(
+            "QLabel#panelHead { background:rgba(18,21,27,0.55);"
+            " border:1px solid rgba(255,255,255,0.08); border-radius:9px;"
+            " padding:5px 8px; }");
         v->addWidget(hd);
         cover_ = new QLabel;
-        cover_->setFixedSize(170, 210);   // Platz für Neigung + Spiegelung
+        // Muss das komplette Cover-Pixmap fassen, sonst schneidet QLabel den
+        // Glow an der Kante hart ab (genau das passierte bis 1.9.20):
+        //   Breite = Cover + Neigung 2*10 + Ambilight 2*kGlowPad
+        //   Höhe   = Cover + Spiegelung (Cover/3) + 10 + Ambilight 2*kGlowPad
+        cover_->setFixedSize(kCoverSide + 20 + 2 * kGlowPad,
+                             kCoverSide + kCoverSide / 3 + 10 + 2 * kGlowPad);
         cover_->setAlignment(Qt::AlignCenter);
         cover_->setText("kein\nCover");
         // Farbiger, atmender Glow rund ums Cover in der Laufwerksfarbe
@@ -1026,7 +1066,9 @@ public:
         alb_ = new QLabel("—");
         alb_->setWordWrap(true);
         alb_->setAlignment(Qt::AlignHCenter);
-        alb_->setFixedWidth(210);
+        // Feste Größe: Ein zweizeiliger Albumtitel darf die Karte nicht höher
+        // machen als ein einzeiliger (s. kCardW-Kommentar am Konstruktoranfang).
+        alb_->setFixedSize(kCardW - 30, 46);
         // Dezenter Text-Glow am Album-Titel.
         { auto* ag = new QGraphicsDropShadowEffect(this);
           ag->setBlurRadius(10); ag->setColor(QColor(0,0,0,180));
@@ -1036,7 +1078,11 @@ public:
         disc_->setFixedSize(160, 160);
         v->addWidget(disc_, 0, Qt::AlignHCenter);
         cap_ = new QLabel;
-        cap_->setAlignment(Qt::AlignHCenter);
+        cap_->setAlignment(Qt::AlignCenter);
+        // Ebenfalls fest: Sonst zieht ein langer Statustext („lege nächste CD
+        // ein …") die ganze Karte breiter als die Nachbarkarte.
+        cap_->setWordWrap(true);
+        cap_->setFixedSize(kCardW - 24, 42);
         // Farbiger Glow an der Status-Pille (Farbe/Stärke setzt setState).
         capGlow_ = new QGraphicsDropShadowEffect(this);
         capGlow_->setBlurRadius(18);
@@ -1098,12 +1144,22 @@ public:
         connect(ctl_, &Controller::discIdent, this,
             [this](const QString& id, int) {
                 if (id != ripId_) {
+                    const bool sameAsPreview =
+                        id.toStdString() == lastId_;
                     ripId_ = id;
-                    clearCoverFrames();   // sonst malt der Atem-Timer das
-                    cover_->setPixmap(QPixmap());   // alte Cover gleich wieder
-                    cover_->setText("lädt …");
-                    alb_->setText("—");
-                    if (onNewDisc) onNewDisc();
+                    // Anzeige nur leeren, wenn wirklich eine ANDERE Disc
+                    // kommt. Startet der Rip auf der Disc, die die Vorschau
+                    // schon geladen hat, blieben Cover und Album sonst für
+                    // die ganze Preflight-Phase auf „lädt …" stehen — bei
+                    // einem langsamen Laufwerk sind das mehrere Minuten, in
+                    // denen die Karte aussieht, als täte sich nichts.
+                    if (!sameAsPreview) {
+                        clearCoverFrames();   // sonst malt der Atem-Timer das
+                        cover_->setPixmap(QPixmap());   // alte Cover wieder
+                        cover_->setText("lädt …");
+                        alb_->setText("—");
+                        if (onNewDisc) onNewDisc();
+                    }
                 }
                 setState(PanelState::Detected); });
         connect(ctl_, &Controller::discScanInit, this,
@@ -1314,12 +1370,15 @@ private:
             "QLabel { color:%1; background:rgba(%2,%2,%2,0); "
             "border:1px solid %1; border-radius:9px; padding:3px 10px; "
             "font-weight:600; }").arg(col).arg(0));
-        // Panel-Rahmen: oben die Laufwerksfarbe (Identität), ringsum ein
-        // dezenter Zustandsglow.
+        // Panel-Rahmen einheitlich in der Zustandsfarbe. Bis 1.9.20 lag hier
+        // zusätzlich ein oberer Rand in der Laufwerksfarbe — beim Rippen war
+        // die Karte dann oben blau und an den übrigen drei Seiten grün, was
+        // schlicht nach Darstellungsfehler aussah. Die Laufwerks-Identität
+        // trägt ohnehin der farbige Punkt vor dem Gerätenamen (und der
+        // Swatch in der Sammeltabelle).
         setStyleSheet(QString(
             "QWidget#drivePanel { background:#262b33; border-radius:12px;"
-            " border:1px solid %1; border-top:3px solid %2; }")
-            .arg(col, accent_.name()));
+            " border:2px solid %1; }").arg(col));
     }
     // Threadsicher ins Sammel-Log melden (Queued auf den GUI-Thread).
     void plog(const QString& m) {
@@ -1343,8 +1402,12 @@ private:
         coverFrames_.clear();
         coverFrame_ = -1;
         for (int i = 0; i < kGlowSteps; ++i) {
-            const int a = 95 + (120 * i) / (kGlowSteps - 1);      // 95…215
-            coverFrames_.push_back(makeCoverArt(pm, 150, kGlowPad, a));
+            // Deutlich zurückhaltender als in 1.9.20 (dort bis 215 ≈ 84 %
+            // Deckkraft): So dicht wirkte der Ambilight nicht wie Licht,
+            // sondern wie eine unscharfe Kopie des Covers, die um das Bild
+            // herum ausblutet.
+            const int a = 80 + (70 * i) / (kGlowSteps - 1);       // 80…150
+            coverFrames_.push_back(makeCoverArt(pm, kCoverSide, kGlowPad, a));
         }
         if (!coverFrames_.empty()) {
             coverFrame_ = 1;
@@ -1352,10 +1415,25 @@ private:
         }
     }
     void clearCoverFrames() { coverFrames_.clear(); coverFrame_ = -1; }
+    // Alle 3 s: liegt eine (neue) Disc im Laufwerk? probe_disc_id() spricht
+    // dafür das Laufwerk an — das lief bis 1.9.20 direkt im GUI-Thread und
+    // ließ die Oberfläche im 3-Sekunden-Takt kurz stehen (dasselbe Muster wie
+    // beim früheren Hotplug-Timer). Jetzt: Probe im Worker, Auswertung per
+    // Queued-Connection zurück im GUI-Thread (onProbeResult).
     void previewTick() {
         if (ctl_->running() || prevBusy_.load() || scanBusy_.load()) return;
-        std::string id;
-        try { id = cdr::probe_disc_id(dev_); } catch (...) { id.clear(); }
+        prevBusy_ = true;                       // deckt Probe UND Vorschau ab
+        if (prevThr_.joinable()) prevThr_.join();
+        const std::string dev = dev_;
+        prevThr_ = std::thread([this, dev] {
+            std::string id;
+            try { id = cdr::probe_disc_id(dev); } catch (...) { id.clear(); }
+            QMetaObject::invokeMethod(this, [this, id] { onProbeResult(id); },
+                                      Qt::QueuedConnection);
+        });
+    }
+    // GUI-Thread: Ergebnis der Disc-Probe auswerten.
+    void onProbeResult(const std::string& id) {
         if (id.empty()) {
             if (!lastId_.empty()) {                 // Disc raus → zurücksetzen
                 lastId_.clear();
@@ -1366,9 +1444,10 @@ private:
                 // nehmen — sie gehören zur ausgeworfenen Disc.
                 if (onNewDisc) onNewDisc();
             }
+            prevBusy_ = false;
             return;
         }
-        if (id == lastId_) return;
+        if (id == lastId_) { prevBusy_ = false; return; }
         lastId_ = id;
         // Disc-Wechsel: die Zeilen der VORIGEN Disc aus der Sammeltabelle
         // werfen, bevor die neue Trackliste kommt. Bisher meldete nur der
@@ -1376,10 +1455,11 @@ private:
         // laufenden Rip (Turbo aus, Disc von Hand tauschen) blieb die alte
         // Liste stehen und die neuen Titel mischten sich darunter.
         if (onNewDisc) onNewDisc();
-        prevBusy_ = true;
         setState(PanelState::Detected, "Disc erkannt — lade Cover …");
         if (onLog) onLog("Disc erkannt — lese Metadaten …");
         std::string dev = dev_, ua = cfg_.mb_useragent, tmp = cfg_.tmpdir;
+        // prevBusy_ steht schon (previewTick); der Probe-Thread ist mit dem
+        // invokeMethod hierher fertig und wird nur noch eingesammelt.
         if (prevThr_.joinable()) prevThr_.join();
         prevThr_ = std::thread([this, dev, ua, tmp] {
             QString at, aa, cov, src;
@@ -1458,7 +1538,11 @@ private:
     // Vorgerenderte Cover-Pixmaps mit Ambilight in aufsteigender Deckkraft
     // (s. buildCoverFrames) + aktuell gezeigte Stufe.
     static constexpr int kGlowSteps = 6;
-    static constexpr int kGlowPad   = 28;   // Ausstrahlung ums Cover herum
+    static constexpr int kCoverSide = 145;  // Cover-Kantenlänge in der Karte
+    static constexpr int kGlowPad   = 38;   // Ausstrahlung ums Cover herum
+    // Kartenbreite = Cover-Feld + Layout-Ränder (2*10). Das Cover-Feld ist
+    // kCoverSide + 2*10 Neigung + 2*kGlowPad Ambilight breit.
+    static constexpr int kCardW = kCoverSide + 20 + 2 * kGlowPad + 20;
     std::vector<QPixmap> coverFrames_;
     int               coverFrame_ = -1;
     QGraphicsDropShadowEffect* capGlow_ = nullptr;

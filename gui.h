@@ -34,6 +34,13 @@ class RipProgressDelegate;   // in gui.cpp definiert (fancy Fortschrittsbalken)
 class QCloseEvent;
 class MultiWindow;                 // T7-GUI: Multi-Laufwerk-Fenster
 
+// Debug-/Design-Hilfe (main.cpp: --render-cover IN OUT): rendert ein Cover
+// exakt so, wie die Disc-Karte es zeigt (Neigung, Spiegelung, Ambilight-Glow)
+// und schreibt das Ergebnis als PNG. Damit lässt sich der Glow beurteilen,
+// ohne die App auf der Zielmaschine neu zu bauen und zu starten.
+bool render_cover_preview(const QString& inPath, const QString& outPath,
+                          int side = 150, int pad = -1, int alpha = -1);
+
 // Wrappt cdr::Pipeline: marshalt alle Callbacks (die aus Worker-Threads kommen)
 // in Qt-Signals mit reinen Qt-Typen → cross-thread queued, kein qRegisterMetaType.
 class Controller : public QObject {

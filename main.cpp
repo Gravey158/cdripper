@@ -141,6 +141,22 @@ int main(int argc, char** argv) {
         else if (a == "--calibrate") calibrate = true;
         else if (a == "--cli")     force_cli = true;
         else if (a == "--gui")     force_gui = true;
+#ifdef HAVE_QT
+        // Design-Hilfe: Cover-Rendering (Neigung, Spiegelung, Ambilight) als
+        // PNG rausschreiben — zum Beurteilen des Glows ohne App-Neustart.
+        //   --render-cover EINGABE AUSGABE [pad] [alpha]
+        else if (a == "--render-cover" && i + 2 < argc) {
+            const QString in  = QString::fromLocal8Bit(argv[i + 1]);
+            const QString out = QString::fromLocal8Bit(argv[i + 2]);
+            const int pad   = i + 3 < argc ? std::atoi(argv[i + 3]) : -1;
+            const int alpha = i + 4 < argc ? std::atoi(argv[i + 4]) : -1;
+            QApplication app(argc, argv);       // QPixmap braucht eine App
+            const bool ok = render_cover_preview(in, out, 150, pad, alpha);
+            std::cerr << (ok ? "geschrieben: " : "FEHLER bei: ")
+                      << out.toStdString() << "\n";
+            return ok ? 0 : 1;
+        }
+#endif
         else if (a == "--version") {
             std::cout << "cdripper " << cdr::VERSION << "\n"; return 0; }
         else if (a == "-h" || a == "--help") { usage(argv[0]); return 0; }

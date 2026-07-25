@@ -26,6 +26,18 @@
   <developer_name>Dennis</developer_name>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="1.9.21" date="2026-07-25">
+      <description>
+        <p>Der Cover-Glow wurde an der Kante hart abgeschnitten: Das Bildfeld der Disc-Karte war schmaler als das Cover samt Ausstrahlung, der Rest fiel weg. Das Feld richtet sich jetzt nach dem tatsächlichen Bild, und der Glow ist deutlich zurückhaltender — vorher deckte er bis zu 84 Prozent und wirkte dadurch wie eine unscharfe Kopie des Covers statt wie Licht.</p>
+        <p>Die Oberfläche stockte weiterhin alle drei Sekunden: Die regelmäßige Prüfung, ob eine Disc im Laufwerk liegt, lief direkt im Oberflächen-Thread und sprach dabei das Laufwerk an. Sie läuft jetzt im Hintergrund.</p>
+        <p>Die Kopfzeile jeder Disc-Karte sitzt in einer abgerundeten, leicht durchscheinenden Box.</p>
+        <p>Einheitlicher Kartenrahmen in der Zustandsfarbe. Bisher war zusätzlich der obere Rand in der Laufwerksfarbe eingefärbt — beim Rippen war die Karte dadurch oben blau und an den übrigen Seiten grün, was wie ein Darstellungsfehler aussah. Welches Laufwerk gemeint ist, zeigen weiterhin der farbige Punkt vor dem Gerätenamen und das Farbfeld in der Titelliste.</p>
+        <p>Cover und Albumtitel bleiben beim Rip-Start stehen, wenn es dieselbe Disc ist, die die Vorschau schon geladen hat. Vorher wurde die Anzeige geleert und stand für die gesamte Preflight-Phase auf „lädt …" — bei einem langsamen Laufwerk mehrere Minuten, in denen die Karte aussah, als täte sich nichts.</p>
+        <p>Der Glow strahlt jetzt weiter und folgt der leichten Neigung des Covers — vorher lag er unverkippt darunter, wodurch links ein breiter Saum stand und rechts fast keiner. Zwei überlagerte Hüllkurven geben ihm einen hellen Lichtsaum direkt am Bildrand und einen weit auslaufenden Schein darum herum.</p>
+        <p>Die Disc-Karten haben feste Maße und springen nicht mehr: Bisher richtete sich die Breite nach dem breitesten Element, sodass ein langer Statustext wie „lege nächste CD ein" die Karte verbreiterte und die Nachbarkarten zur Seite schob. Auch Albumtitel und Statuszeile haben nun feste Größen.</p>
+        <p>Neu für Design-Anpassungen: <code>--render-cover EINGABE AUSGABE</code> schreibt das Cover-Rendering samt Glow als PNG heraus, ohne dass die Anwendung dafür gestartet werden muss.</p>
+      </description>
+    </release>
     <release version="1.9.20" date="2026-07-25">
       <description>
         <p>Flüssiger Hintergrund: Die wandernden Farb-Glows wurden zuletzt nur alle vier Bilder neu berechnet und sprangen dadurch sichtbar im Viertelsekunden-Takt. Sie sind jetzt vorgerenderte Bilder, die pro Frame nur noch verschoben werden — das ist billiger als vorher und läuft mit 25 statt 16 Bildern pro Sekunde.</p>
