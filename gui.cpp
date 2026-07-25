@@ -26,6 +26,7 @@
 #include <QGroupBox>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QFontMetrics>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -1068,7 +1069,10 @@ public:
         alb_->setAlignment(Qt::AlignHCenter);
         // Feste Größe: Ein zweizeiliger Albumtitel darf die Karte nicht höher
         // machen als ein einzeiliger (s. kCardW-Kommentar am Konstruktoranfang).
-        alb_->setFixedSize(kCardW - 30, 46);
+        // Platz für zwei Titelzeilen plus die Interpreten-Zeile — mit den
+        // vorherigen 46 px wurde bei „Viva la Vida or Death and All His
+        // Friends" die Zeile „Coldplay" unten abgeschnitten.
+        alb_->setFixedSize(kCardW - 30, 68);
         // Dezenter Text-Glow am Album-Titel.
         { auto* ag = new QGraphicsDropShadowEffect(this);
           ag->setBlurRadius(10); ag->setColor(QColor(0,0,0,180));
@@ -1131,7 +1135,7 @@ public:
         connect(ctl_, &Controller::albumReady, this,
             [this](const QString& aa, const QString& at, const QString&,
                    const QStringList& ti, const QStringList&) {
-                alb_->setText("<b>" + at + "</b><br>" + aa);
+                setAlbumText(at, aa);
                 // Track-Titel in die Sammeltabelle: im Turbo-Dauerlauf läuft
                 // die Vorschau (onTracks) nicht, sonst blieben die Titel leer
                 // und würden von den AccurateRip-Meldungen ersetzt.
@@ -1386,6 +1390,17 @@ private:
             if (onLog) onLog(m);
         }, Qt::QueuedConnection);
     }
+    // Album/Interpret ins Label — Titel auf zwei Zeilen gekürzt, Interpret
+    // auf eine. Ohne das Kürzen schiebt ein sehr langer Titel die
+    // Interpreten-Zeile aus dem (fest hohen) Feld heraus.
+    void setAlbumText(const QString& title, const QString& artist) {
+        const int w = std::max(40, alb_->width() - 6);
+        const QFontMetrics fm(alb_->font());
+        const QString t = fm.elidedText(title,  Qt::ElideRight, w * 2 - 12);
+        const QString a = fm.elidedText(artist, Qt::ElideRight, w);
+        alb_->setText("<b>" + t.toHtmlEscaped() + "</b><br>" +
+                      a.toHtmlEscaped());
+    }
     void setCover(const QString& p) {
         QPixmap pm(p);
         if (!pm.isNull()) {
@@ -1406,6 +1421,10 @@ private:
             // Deckkraft): So dicht wirkte der Ambilight nicht wie Licht,
             // sondern wie eine unscharfe Kopie des Covers, die um das Bild
             // herum ausblutet.
+            // 16 statt 6 Stufen: Bei sechs sprang der Atem sichtbar im
+            // halben Sekundentakt, weil zwischen zwei Deckkraft-Werten
+            // mehrere hundert Millisekunden lagen. Jetzt wechselt das Bild
+            // etwa alle 100 ms und wirkt als gleichmäßiges Pulsieren.
             const int a = 80 + (70 * i) / (kGlowSteps - 1);       // 80…150
             coverFrames_.push_back(makeCoverArt(pm, kCoverSide, kGlowPad, a));
         }
@@ -1518,7 +1537,7 @@ private:
             }
             QMetaObject::invokeMethod(this, [this, at, aa, cov, tl] {
                 if (!at.isEmpty() || !aa.isEmpty())
-                    alb_->setText("<b>" + at + "</b><br>" + aa);
+                    setAlbumText(at, aa);
                 if (!cov.isEmpty()) setCover(cov);
                 // Trackliste sofort an die gemeinsame Tabelle melden
                 // (erscheint pro Laufwerk noch vor dem Rip).
@@ -1537,7 +1556,7 @@ private:
     int               animPhase_ = 0;                 // Puls-Animation
     // Vorgerenderte Cover-Pixmaps mit Ambilight in aufsteigender Deckkraft
     // (s. buildCoverFrames) + aktuell gezeigte Stufe.
-    static constexpr int kGlowSteps = 6;
+    static constexpr int kGlowSteps = 16;   // feine Atem-Stufen (s. unten)
     static constexpr int kCoverSide = 145;  // Cover-Kantenlänge in der Karte
     static constexpr int kGlowPad   = 38;   // Ausstrahlung ums Cover herum
     // Kartenbreite = Cover-Feld + Layout-Ränder (2*10). Das Cover-Feld ist
@@ -1756,9 +1775,21 @@ private:
     // knapp 30 Helligkeitsstufen über 700 Pixel schlicht nicht, jede Stufe
     // wird als Kante wahrgenommen. Das Rauschen bricht die Kanten auf, ohne
     // dass man es als Rauschen erkennt.
-    static inline int dither(int x, int y) {
-        const unsigned h = (unsigned)(x * 73856093) ^ (unsigned)(y * 19349663);
-        return (int)((h >> 13) % 3) - 1;                  // -1, 0 oder +1
+    // Liefert eine deterministische Pseudo-Zufallszahl in [0,1) aus den
+    // Koordinaten. Damit wird beim Runden auf 8 Bit gewürfelt statt
+    // gerundet: floor(exakt + zufall). Das ist echtes Dithering — der
+    // vorherige Ansatz („runden, dann ±1 addieren") verschiebt die Kanten
+    // nur, statt sie aufzulösen, weshalb die Streifen sichtbar blieben.
+    // Nötig ist das, weil der Verlauf über die volle Fensterhöhe nur rund
+    // sechs Helligkeitsstufen durchläuft: ohne Dither liegt alle ~180 Pixel
+    // eine harte Kante.
+    static inline double ditherNoise(int x, int y) {
+        unsigned h = (unsigned)(x * 73856093) ^ (unsigned)(y * 19349663);
+        h ^= h >> 13; h *= 1274126177u; h ^= h >> 16;
+        return (h & 0xffffu) / 65536.0;                   // [0,1)
+    }
+    static inline int ditherRound(double v, int x, int y) {
+        return std::clamp((int)std::floor(v + ditherNoise(x, y)), 0, 255);
     }
     // Basis-Verlauf (statisch) und die drei Glow-Sprites neu erzeugen. Läuft
     // nur beim ersten Zeichnen und nach Größenänderungen, deshalb dürfen es
@@ -1771,23 +1802,24 @@ private:
         const QColor top(0x1a, 0x1e, 0x27), bot(0x14, 0x17, 0x1e);
         for (int y = 0; y < H; ++y) {
             const double t = H > 1 ? (double)y / (H - 1) : 0.0;
-            const int r = (int)std::lround(top.red()   + (bot.red()   - top.red())   * t);
-            const int g = (int)std::lround(top.green() + (bot.green() - top.green()) * t);
-            const int b = (int)std::lround(top.blue()  + (bot.blue()  - top.blue())  * t);
+            const double r = top.red()   + (bot.red()   - top.red())   * t;
+            const double g = top.green() + (bot.green() - top.green()) * t;
+            const double b = top.blue()  + (bot.blue()  - top.blue())  * t;
             auto* line = reinterpret_cast<QRgb*>(img.scanLine(y));
-            for (int x = 0; x < W; ++x) {
-                const int d = dither(x, y);
-                line[x] = qRgb(std::clamp(r + d, 0, 255),
-                               std::clamp(g + d, 0, 255),
-                               std::clamp(b + d, 0, 255));
-            }
+            for (int x = 0; x < W; ++x)
+                line[x] = qRgb(ditherRound(r, x, y),
+                               ditherRound(g, x + 977, y),
+                               ditherRound(b, x, y + 613));
         }
         base_ = QPixmap::fromImage(img);
         // ── Glow-Sprites: je ein weicher Radial-Verlauf mit Alpha-Dither ───
         // Quadratisch abfallende Hüllkurve (statt linear) — das wirkt wie ein
         // echtes Leuchten und hat keine sichtbare Außenkante.
         blobR_ = std::max(W, H) * 0.42;
-        const int S = std::clamp((int)std::lround(blobR_), 64, 512);  // Sprite-Kante/2
+        // Sprite möglichst in Zielgröße: Wird es beim Zeichnen stark
+        // hochskaliert, glättet Qt das eingebackene Dither wieder weg und die
+        // Streifen kommen zurück. 1024 deckt auch große Fenster ab.
+        const int S = std::clamp((int)std::lround(blobR_), 64, 1024);
         static const QColor tint[3] = { QColor(0x39,0x87,0xe5),
                                         QColor(0x90,0x85,0xe9),
                                         QColor(0x19,0x9e,0x70) };
@@ -1801,8 +1833,7 @@ private:
                     const double d = std::sqrt(dx * dx + dy * dy);
                     if (d >= 1.0) { line[x] = 0; continue; }
                     const double f = (1.0 - d) * (1.0 - d);   // quadratisch aus
-                    int a = (int)std::lround(34.0 * f) + dither(x, y);
-                    a = std::clamp(a, 0, 255);
+                    const int a = ditherRound(34.0 * f, x, y);
                     if (a <= 0) { line[x] = 0; continue; }
                     // Premultiplied: Farbanteile mit Alpha skalieren.
                     line[x] = qRgba(tint[b].red()   * a / 255,
@@ -1821,17 +1852,17 @@ private:
     // Frame billig genug dafür, und die Bewegung wirkt spürbar flüssiger.
     // Die Faktoren sind gegenüber 60 ms mit 2/3 skaliert, damit Glows,
     // Glitzer und Funkeln exakt gleich schnell laufen wie vorher.
-    static constexpr int    kTickMs    = 40;
-    static constexpr double kBlobSpeed = 0.004;      // war 0.006 bei 60 ms
-    static constexpr double kStarSpeed = 0.001067;   // war 0.0016
-    static constexpr double kTwinkle   = 0.0333;     // war 0.05
+    static constexpr int    kTickMs    = 25;         // 40 Bilder/s
+    static constexpr double kBlobSpeed = 0.0025;     // war 0.006 bei 60 ms
+    static constexpr double kStarSpeed = 0.000667;   // war 0.0016
+    static constexpr double kTwinkle   = 0.0208;     // war 0.05
     // Caches (s. rebuildCaches): Basis-Verlauf + Glow-Sprites.
     QPixmap base_;
     QPixmap blob_[3];
     double  blobR_ = 0;
     QSize   cacheSize_;
     // Status-Puls-Zustand
-    static constexpr int kPulseDur = 45;   // ~1,8 s bei 40 ms/Tick
+    static constexpr int kPulseDur = 72;   // ~1,8 s bei 25 ms/Tick
     bool   pulsing_   = false;
     int    pulseTick_ = 0;
     QColor pulseColor_{0x35, 0xc7, 0x59};

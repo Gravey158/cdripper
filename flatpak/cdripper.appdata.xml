@@ -26,6 +26,14 @@
   <developer_name>Dennis</developer_name>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="1.9.23" date="2026-07-25">
+      <description>
+        <p>Der Interpret wurde unter langen Albumtiteln abgeschnitten („Viva la Vida or Death and All His Friends" braucht zwei Zeilen, „Coldplay" fiel darunter aus dem Feld). Das Textfeld ist jetzt hoch genug für beides, und überlange Titel werden mit Auslassungspunkten gekürzt statt beschnitten.</p>
+        <p>Streifen im Hintergrundverlauf endgültig weg: Bisher wurde auf ganze Farbwerte gerundet und danach ein leichtes Rauschen addiert — das verschiebt die Kanten nur. Jetzt wird beim Runden gewürfelt (echtes Dithering), und die Farbwolken werden nicht mehr kleiner gerendert und hochskaliert, was das Rauschen wieder weggeglättet hatte.</p>
+        <p>Die Animation läuft mit 40 statt 25 Bildern pro Sekunde.</p>
+        <p>Der Cover-Glow pulsiert gleichmäßig statt im Halbsekundentakt zu springen: Statt sechs vorgerenderten Helligkeitsstufen gibt es jetzt sechzehn, sodass etwa alle hundert Millisekunden ein Zwischenschritt vorliegt.</p>
+      </description>
+    </release>
     <release version="1.9.22" date="2026-07-25">
       <description>
         <p>Cover werden häufiger gefunden: Bisher wurde nur bei genau der Ausgabe nachgesehen, die zur Disc gewählt wurde (plus deren Veröffentlichungsgruppe). Passt eine Disc-Kennung auf zwanzig Ausgaben und ausgerechnet die gewählte hat im Cover Art Archive kein Bild, blieb die Karte leer, obwohl das Album selbst erkannt war. Jetzt werden zusätzlich weitere Ausgaben desselben Albums durchprobiert (bis zu vier), bevor aufgegeben wird.</p>
