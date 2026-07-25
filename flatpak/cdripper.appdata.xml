@@ -26,6 +26,12 @@
   <developer_name>Dennis</developer_name>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="1.9.29" date="2026-07-25">
+      <description>
+        <p>Ein von Hand gewähltes Cover wird jetzt auch wirklich ins Album-Verzeichnis am Ziel übertragen. Bisher lief der Cover-Upload ausschließlich während des Rippens mit; wer das Bild erst danach hinterlegte — also genau dann, wenn beim Rippen keines gefunden wurde —, sah es zwar in der Karte, in der Bibliothek fehlte es aber weiterhin.</p>
+        <p>Wird beim Erkennen einer Disc kein Cover gefunden, weist das Coverfeld nun selbst darauf hin, dass man mit einem Klick eines auswählen kann — statt es erst später zu bemerken. Bewusst ohne Dialogfenster, das im Dauerlauf mit mehreren Laufwerken mitten in den Betrieb platzen würde.</p>
+      </description>
+    </release>
     <release version="1.9.28" date="2026-07-25">
       <description>
         <p>Bei Doppel-Alben konnte die falsche Disc erkannt werden: Wenn der Abgleich über die eindeutige Disc-Kennung fehlschlug und die Suche über das Inhaltsverzeichnis einsprang, wurde schlicht das erste Medium mit passender Titelzahl genommen. Haben beide CDs gleich viele Titel — bei „Bravo Hits 39" je zwanzig —, bekam CD 2 die Titel von CD 1 und wurde als Disc 1 abgelegt. Jetzt werden zusätzlich die Titel-Längen aus dem Inhaltsverzeichnis mit den Medien verglichen; das ist praktisch eindeutig (im Beispiel: Abweichung 0 Sekunden zur richtigen Disc gegenüber neuneinhalb Minuten zur falschen). Liefert die Suche Disc-Kennungen mit, haben die weiterhin Vorrang.</p>

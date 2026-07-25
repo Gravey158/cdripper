@@ -1429,8 +1429,47 @@ private:
         if (pm.isNull()) { plog("Bild konnte nicht gelesen werden."); return; }
         buildCoverFrames(pm);
         coverAccent_ = coverAccentColor(pm, accent_);
-        ctl_->setCover(f);
+        ctl_->setCover(f);          // greift nur für einen NOCH laufenden Rip
         plog("Cover von Hand gesetzt: " + QFileInfo(f).fileName());
+        uploadCoverNow(f);
+    }
+    // Cover direkt ins Album-Verzeichnis am Ziel legen.
+    //
+    // Nötig, weil der reguläre Cover-Upload in der Track-Schleife der Pipeline
+    // hängt (pipeline.cpp: „if (!cover_done && !al.cover_jpg.empty())"): Wer
+    // das Cover erst NACH dem Rip von Hand setzt — also genau dann, wenn das
+    // Cover Art Archive nichts hatte und man selbst eins gesucht hat —, dessen
+    // Bild landete nirgends. Die Anzeige stimmte, die Bibliothek blieb leer.
+    void uploadCoverNow(const QString& file) {
+        if (lastAlbum_.artist.empty() && lastAlbum_.title.empty()) {
+            plog("Cover nicht übertragen — Album noch nicht erkannt.");
+            return;
+        }
+        if (coverBusy_.exchange(true)) return;
+        cdr::Album al = lastAlbum_;
+        cdr::Config cfg = cfg_;
+        const std::string local = file.toStdString();
+        if (coverThr_.joinable()) coverThr_.join();
+        coverThr_ = std::thread([this, al, cfg, local] {
+            QString err;
+            try {
+                auto up = cdr::make_uploader(cfg);
+                std::vector<std::string> segs = { cfg.music_root };
+                for (auto& s : al.folder_segments()) segs.push_back(s);
+                up->ensure_dirs(segs);
+                segs.push_back("cover.jpg");
+                up->put(fs::path(local), segs);
+            } catch (const std::exception& e) {
+                err = QString::fromUtf8(e.what());
+            } catch (...) { err = "unbekannter Fehler"; }
+            QMetaObject::invokeMethod(this, [this, err] {
+                plog(err.isEmpty()
+                     ? QString::fromUtf8("Cover ins Album-Verzeichnis "
+                                         "hochgeladen.")
+                     : QString::fromUtf8("Cover-Upload fehlgeschlagen: ") + err);
+                coverBusy_ = false;
+            }, Qt::QueuedConnection);
+        });
     }
     // Nochmal im Cover Art Archive nachsehen (inkl. der weiteren Ausgaben
     // desselben Albums) — z. B. wenn beim ersten Versuch das Netz klemmte.
@@ -1606,8 +1645,10 @@ private:
                     if (cdr::fetch_cover_for_album(al, ua, d, out))
                         cov = QString::fromStdString(out.string());
                 } catch (...) {}
-                plog(cov.isEmpty() ? "kein Cover gefunden"
-                                   : "Cover geladen");
+                plog(cov.isEmpty()
+                     ? QString::fromUtf8("kein Cover gefunden — aufs Coverfeld "
+                                         "klicken, um selbst eins zu wählen")
+                     : QString::fromUtf8("Cover geladen"));
             } catch (...) {
                 plog("Disc-Vorschau fehlgeschlagen (Lesefehler?)");
             }
@@ -1615,7 +1656,18 @@ private:
                 lastAlbum_ = meta;          // Basis für „Cover erneut suchen"
                 if (!at.isEmpty() || !aa.isEmpty())
                     setAlbumText(at, aa);
-                if (!cov.isEmpty()) setCover(cov);
+                if (!cov.isEmpty()) {
+                    setCover(cov);
+                } else {
+                    // Kein Cover gefunden → das Coverfeld sagt gleich, dass
+                    // man selbst eins hinterlegen kann. Bewusst kein Dialog:
+                    // im Dauerlauf mit mehreren Laufwerken würde der
+                    // mitten in den Betrieb platzen.
+                    clearCoverFrames();
+                    cover_->setPixmap(QPixmap());
+                    cover_->setText(QString::fromUtf8(
+                        "kein Cover gefunden\n\n▶ klicken,\num eins zu wählen"));
+                }
                 // Trackliste sofort an die gemeinsame Tabelle melden
                 // (erscheint pro Laufwerk noch vor dem Rip).
                 if (onTracks && !tl.isEmpty()) onTracks(tl);
