@@ -7,8 +7,10 @@
 #include <memory>
 #include <optional>
 #include <thread>
+#include <vector>
 
 #include <QColor>
+#include <QPixmap>
 #include <QDialog>
 #include <QMainWindow>
 #include <QMap>
@@ -121,6 +123,8 @@ private slots:
     void onAlbumReady(const QString&, const QString&, const QString&,
                       const QStringList&, const QStringList&);
     void onCoverReady(const QString&);
+    // Cover + Ambilight-Stufen ins Label (s. coverFrames_).
+    void setCoverFrames(const QPixmap& src);
     void onTrackState(int idx, int state, double frac, const QString& msg);
     void onProgress(double elapsed, double eta, int ripped, int uploaded, int total);
     void onMetrics(double ripMBps, double encMBps, double upMBps);
@@ -191,8 +195,11 @@ private:
     QList<QStringList> history_;   // {Zeit, Album, Status, AccurateRip}
     QLabel*     cover_;
     QWidget*    mainFx_ = nullptr;              // animierter Hintergrund
-    QGraphicsDropShadowEffect* coverGlow_ = nullptr;  // atmender Cover-Glow
-    QColor      coverAccent_{0x29, 0x79, 0xff};        // Glow-Farbe aus Cover
+    // Cover-Glow: vorgerenderte Ambilight-Stufen (Randfarben des Covers) in
+    // aufsteigender Deckkraft; der Atem-Timer schaltet nur das Pixmap um.
+    std::vector<QPixmap> coverFrames_;
+    int         coverFrame_ = -1;
+    QColor      coverAccent_{0x29, 0x79, 0xff};        // Tint-Farbe aus Cover
     int         mainAnimPhase_ = 0;
     QPushButton* coverBtn_;
     QPushButton* coverMbBtn_;

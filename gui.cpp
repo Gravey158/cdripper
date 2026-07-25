@@ -24,6 +24,7 @@
 #include <QFrame>
 #include <QGroupBox>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -786,11 +787,51 @@ static QColor driveAccent(int idx) {
     return pal[idx % 6];
 }
 
+// Ambilight-Glow aus den Randfarben des Covers — wie die Hinterleuchtung
+// eines Fernsehers: oben blauer Himmel → blauer Schein oben, unten rote
+// Jacke → roter Schein unten. Vorher lag hier ein einfarbiger
+// QGraphicsDropShadowEffect in der „dominanten" Cover-Farbe, der das Bild
+// zwangsläufig auf einen Ton reduzierte.
+//
+// Trick: das Cover auf 12x12 runterrechnen und weich auf Cover+Rand
+// hochziehen. Beim Hochskalieren setzen genau die Randpixel ihre Farbe nach
+// außen fort — der Glow bildet den Bildrand also 1:1 nach, ohne dass man
+// einzelne Kantenpixel abklappern muss. Nach außen wird das Alpha über vier
+// Verläufe weich auf 0 gezogen (an den Ecken multiplizieren sie sich zum
+// runden Abfall), am Ende dämpft ein globaler Alpha-Faktor das Ganze.
+// `alpha` steuert die Gesamtdeckkraft — darüber „atmet" der Glow (mehrere
+// vorgerenderte Stufen statt eines pro Frame neu berechneten Blurs).
+static QPixmap coverAmbilight(const QPixmap& src, const QSize& inner,
+                              int pad, int alpha) {
+    if (src.isNull() || pad <= 0 || inner.isEmpty()) return {};
+    const int W = inner.width() + pad * 2, H = inner.height() + pad * 2;
+    QImage mini = src.scaled(12, 12, Qt::IgnoreAspectRatio,
+                             Qt::SmoothTransformation).toImage();
+    QImage up = mini.scaled(W, H, Qt::IgnoreAspectRatio,
+                            Qt::SmoothTransformation)
+                    .convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    QPainter p(&up);
+    p.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+    auto fade = [&](QLinearGradient g, const QRect& r) {
+        g.setColorAt(0.0, QColor(0, 0, 0, 0));      // außen unsichtbar
+        g.setColorAt(1.0, QColor(0, 0, 0, 255));    // innen unverändert
+        p.fillRect(r, g);
+    };
+    fade(QLinearGradient(0, 0, 0, pad),       QRect(0, 0, W, pad));
+    fade(QLinearGradient(0, H, 0, H - pad),   QRect(0, H - pad, W, pad));
+    fade(QLinearGradient(0, 0, pad, 0),       QRect(0, 0, pad, H));
+    fade(QLinearGradient(W, 0, W - pad, 0),   QRect(W - pad, 0, pad, H));
+    p.fillRect(0, 0, W, H, QColor(0, 0, 0, std::clamp(alpha, 0, 255)));
+    p.end();
+    return QPixmap::fromImage(up);
+}
+
 // „Bling"-Cover: das Album leicht schräg (Pseudo-3D, wie aufgeklappt) mit
 // einer ausgefadeten Spiegelung darunter rendern. Gibt ein transparentes
-// Pixmap der Gesamtgröße (Cover + Neigung + Spiegelung) zurück; der farbige
-// Glow ringsum kommt separat über einen QGraphicsDropShadowEffect am Label.
-static QPixmap makeCoverArt(const QPixmap& src, int side) {
+// Pixmap der Gesamtgröße (Cover + Neigung + Spiegelung + Glow-Rand) zurück.
+// glowPad>0 legt den Ambilight-Glow (s. coverAmbilight) unter das Cover.
+static QPixmap makeCoverArt(const QPixmap& src, int side,
+                            int glowPad = 0, int glowAlpha = 150) {
     if (src.isNull()) return {};
     QPixmap cover = src.scaled(side, side, Qt::KeepAspectRatio,
                                Qt::SmoothTransformation);
@@ -826,29 +867,83 @@ static QPixmap makeCoverArt(const QPixmap& src, int side) {
         rp.fillRect(0, 0, w, reflH, g);
     }
     pt.drawPixmap(0, h + 3, reflFaded);
-    return out;
+    pt.end();
+    if (glowPad <= 0) return out;
+    // Glow als unterster Layer: Das Cover-Rechteck liegt im `out` bei
+    // (pad, 0)…(pad+w, h). Der Ambilight ist um glowPad größer als das Cover,
+    // sein Innenbereich muss also deckungsgleich darüber zu liegen kommen →
+    // Position (pad-glowPad, -glowPad), im verschobenen Gesamtbild (pad, 0).
+    QPixmap withGlow(out.width() + glowPad * 2, out.height() + glowPad * 2);
+    withGlow.fill(Qt::transparent);
+    QPainter gp(&withGlow);
+    gp.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    QPixmap amb = coverAmbilight(cover, QSize(w, h), glowPad, glowAlpha);
+    if (!amb.isNull()) gp.drawPixmap(pad, 0, amb);
+    gp.drawPixmap(glowPad, glowPad, out);
+    return withGlow;
 }
 
 // Dominante, „lebendige" Farbe eines Covers — für Glow/Akzent, der zum Bild
-// passt. Sampelt ein verkleinertes Abbild und wählt den Pixel mit der besten
-// Sättigung×Helligkeit (keine grauen/zu dunklen/zu hellen). Bei fast
-// farblosen (s/w-)Covern → fallback auf die Laufwerksfarbe.
+// passt. Bei fast farblosen (s/w-)Covern → Fallback auf die Laufwerksfarbe.
+//
+// Wichtig ist die FLÄCHE, nicht der knalligste Einzelpixel: Die frühere
+// Fassung nahm schlicht das Pixel mit dem besten Sättigung×Helligkeit-Wert.
+// Damit gewann auf „Images — Jean Michel Jarre" (halbes Bild hellblauer
+// Himmel) die kleine rote Jacke, und praktisch jedes Cover mit irgendeinem
+// roten Detail bekam einen roten Glow.
+//
+// Jetzt: Farbtöne in 24 Sektoren à 15° einsortieren, jeder Pixel mit seiner
+// Sättigung gewichtet (große blasse Flächen schlagen kleine knallige, aber
+// ein grauer Hintergrund bleibt chancenlos). Gewertet wird über ein Fenster
+// aus drei benachbarten Sektoren, damit ein Farbton, der genau auf einer
+// Sektorgrenze liegt, sich nicht selbst halbiert — Rot um 0°/360° wird dabei
+// zyklisch korrekt gemittelt (Vektorsumme statt arithmetischem Mittel).
 static QColor coverAccentColor(const QPixmap& src, const QColor& fallback) {
     if (src.isNull()) return fallback;
-    QImage img = src.scaled(28, 28, Qt::IgnoreAspectRatio,
+    QImage img = src.scaled(48, 48, Qt::IgnoreAspectRatio,
                             Qt::SmoothTransformation).toImage();
-    QColor best = fallback; double bestScore = -1.0;
+    constexpr int kBuckets = 24;
+    double wsum[kBuckets] = {0}, xs[kBuckets] = {0}, ys[kBuckets] = {0};
+    double ss[kBuckets] = {0}, vs[kBuckets] = {0};
+    double colored = 0, total = 0;
     for (int y = 0; y < img.height(); ++y)
         for (int x = 0; x < img.width(); ++x) {
             QColor c = img.pixelColor(x, y);
             int h, s, v; c.getHsv(&h, &s, &v);
-            double mid = (v > 45 && v < 240) ? 1.0 : 0.25;   // Extreme meiden
-            double score = (s / 255.0) * (v / 255.0) * mid;
-            if (score > bestScore) { bestScore = score; best = c; }
+            total += 1.0;
+            // Zu dunkel, ausgebrannt oder praktisch grau → trägt keine
+            // Farbinformation (zählt aber beim S/W-Test unten mit).
+            if (h < 0 || s < 40 || v < 40 || v > 245) continue;
+            colored += 1.0;
+            const double w  = s / 255.0;              // Flächenanteil × Sättigung
+            const double rad = h * M_PI / 180.0;
+            const int b = (h / (360 / kBuckets)) % kBuckets;
+            wsum[b] += w;
+            xs[b]   += w * std::cos(rad);
+            ys[b]   += w * std::sin(rad);
+            ss[b]   += w * s;
+            vs[b]   += w * v;
         }
-    int h, s, v; best.getHsv(&h, &s, &v);
-    if (s < 45) return fallback;                 // zu grau → Laufwerksfarbe
-    best.setHsv(h, std::min(255, s + 45),        // fürs Leuchten aufsatten
+    // Weniger als ~12 % farbige Fläche → S/W-Cover, Laufwerksfarbe behalten.
+    if (total <= 0 || colored / total < 0.12) return fallback;
+    int bestB = -1; double bestW = 0;
+    for (int b = 0; b < kBuckets; ++b) {
+        const int l = (b + kBuckets - 1) % kBuckets, r = (b + 1) % kBuckets;
+        const double win = wsum[l] + wsum[b] + wsum[r];
+        if (win > bestW) { bestW = win; bestB = b; }
+    }
+    if (bestB < 0 || bestW <= 0) return fallback;
+    const int l = (bestB + kBuckets - 1) % kBuckets, r = (bestB + 1) % kBuckets;
+    const double X = xs[l] + xs[bestB] + xs[r];
+    const double Y = ys[l] + ys[bestB] + ys[r];
+    const double W = wsum[l] + wsum[bestB] + wsum[r];
+    double hue = std::atan2(Y, X) * 180.0 / M_PI;
+    if (hue < 0) hue += 360.0;
+    const int s = (int)((ss[l] + ss[bestB] + ss[r]) / W);
+    const int v = (int)((vs[l] + vs[bestB] + vs[r]) / W);
+    QColor best;
+    best.setHsv(((int)std::lround(hue)) % 360,
+                std::min(255, s + 45),           // fürs Leuchten aufsatten
                 std::min(255, std::max(v, 150) + 30));
     return best;
 }
@@ -897,11 +992,10 @@ public:
         cover_->setText("kein\nCover");
         // Farbiger, atmender Glow rund ums Cover in der Laufwerksfarbe
         // (blurRadius wird vom Anim-Timer sanft pulsiert → „lebt").
-        coverGlow_ = new QGraphicsDropShadowEffect(this);
-        coverGlow_->setBlurRadius(26);
-        coverGlow_->setColor(accent_);
-        coverGlow_->setOffset(0, 0);
-        cover_->setGraphicsEffect(coverGlow_);
+        // Kein QGraphicsDropShadowEffect mehr am Cover: der Glow steckt jetzt
+        // als Ambilight im Cover-Pixmap selbst (s. buildCoverFrames) — das
+        // bildet die Randfarben nach statt alles einfarbig zu überstrahlen und
+        // kostet nebenbei keine Blur-Berechnung pro Repaint.
         v->addWidget(cover_, 0, Qt::AlignHCenter);
         alb_ = new QLabel("—");
         alb_->setWordWrap(true);
@@ -923,6 +1017,22 @@ public:
         capGlow_->setOffset(0, 0);
         cap_->setGraphicsEffect(capGlow_);
         v->addWidget(cap_);
+        // Start pro Laufwerk: rippt genau die eingelegte CD (once=true).
+        // Nur im Manuell-Modus sichtbar — mit Turbo/Dauerlauf startet ohnehin
+        // „Alle starten" und jedes Laufwerk läuft danach von selbst weiter,
+        // da wäre ein Einzelstart nur verwirrend. Während eines laufenden
+        // Rips ist der Knopf gesperrt (Storno bleibt der Ausweg).
+        startBtn_ = new QPushButton(QString::fromUtf8("▶ Rippen"));
+        startBtn_->setProperty("primary", true);
+        startBtn_->setToolTip(QString::fromUtf8(
+            "Nur die in diesem Laufwerk liegende CD rippen."));
+        startBtn_->setVisible(false);       // Turbo ist Default → versteckt
+        connect(startBtn_, &QPushButton::clicked, this, [this] {
+            if (ctl_->running()) return;
+            plog(QString::fromUtf8("▶ Rip gestartet — nur die eingelegte CD."));
+            start(true);
+        });
+        v->addWidget(startBtn_);
         // Storno pro Laufwerk: laufenden Rip abbrechen + CD auswerfen (z. B.
         // bei falsch erkanntem Album/Cover). Nur aktiv während ein Rip läuft.
         cancelBtn_ = new QPushButton(QString::fromUtf8("⏏ Abbrechen & Auswerfen"));
@@ -938,6 +1048,7 @@ public:
         connect(ctl_, &Controller::finished, this,
                 [this] {
                     cancelBtn_->setEnabled(false);
+                    startBtn_->setEnabled(true);    // nächste CD kann starten
                     if (pendingEject_) {           // Storno → jetzt auswerfen
                         pendingEject_ = false;
                         std::string d = dev_;
@@ -962,7 +1073,8 @@ public:
             [this](const QString& id, int) {
                 if (id != ripId_) {
                     ripId_ = id;
-                    cover_->setPixmap(QPixmap());
+                    clearCoverFrames();   // sonst malt der Atem-Timer das
+                    cover_->setPixmap(QPixmap());   // alte Cover gleich wieder
                     cover_->setText("lädt …");
                     alb_->setText("—");
                     if (onNewDisc) onNewDisc();
@@ -1011,9 +1123,19 @@ public:
             const bool busy = state_ == PanelState::Ripping ||
                               state_ == PanelState::Scanning;
             const double s = std::sin(animPhase_ * 0.09);      // -1..1
-            if (coverGlow_)
-                coverGlow_->setBlurRadius((busy ? 30 : 24) +
-                                          (busy ? 16 : 7) * (s * 0.5 + 0.5));
+            // Cover-Glow atmet über die vorgerenderten Ambilight-Stufen:
+            // im Leerlauf dezent (untere Hälfte), bei Scan/Rip kräftiger.
+            if (!coverFrames_.empty()) {
+                const double u = s * 0.5 + 0.5;                // 0..1
+                const int lo = busy ? kGlowSteps / 2 : 0;
+                const int hi = busy ? kGlowSteps - 1 : kGlowSteps / 2;
+                int idx = lo + (int)std::lround(u * (hi - lo));
+                idx = std::clamp(idx, 0, (int)coverFrames_.size() - 1);
+                if (idx != coverFrame_) {
+                    coverFrame_ = idx;
+                    cover_->setPixmap(coverFrames_[idx]);
+                }
+            }
             if (capGlow_)
                 capGlow_->setBlurRadius(14 + 8 * (s * 0.5 + 0.5));
         });
@@ -1029,10 +1151,21 @@ public:
     // nächste warten, weiter. once=true → nur die eingelegte CD.
     void start(bool once) {
         if (!ctl_->running()) { ctl_->start(cfg_, once);
-                                cancelBtn_->setEnabled(true); }
+                                cancelBtn_->setEnabled(true);
+                                startBtn_->setEnabled(false); }
+    }
+    // Manuell-Modus (Turbo aus): Einzelstart-Knopf pro Laufwerk einblenden.
+    void setManualMode(bool on) {
+        startBtn_->setVisible(on);
+        startBtn_->setEnabled(!ctl_->running());
     }
     void stop()  { ctl_->requestStop(); }
     bool running() const { return ctl_->running(); }
+    // Greift dieses Panel gerade aufs Laufwerk zu? (Rip, Qualitäts-Scan oder
+    // Cover-Vorschau) — wer das Gerät enumerieren will, wartet solange.
+    bool busy() const {
+        return ctl_->running() || scanBusy_.load() || prevBusy_.load();
+    }
     // Storno pro Laufwerk: laufenden Rip abbrechen, danach (im finished-
     // Handler) die CD auswerfen. Ohne laufenden Rip: nur auswerfen.
     void stopAndEject() {
@@ -1171,12 +1304,28 @@ private:
     void setCover(const QString& p) {
         QPixmap pm(p);
         if (!pm.isNull()) {
-            cover_->setPixmap(makeCoverArt(pm, 150));   // schräg + Spiegelung
-            // Glow-Farbe aus dem Cover ziehen → passt sich dem Album an.
+            buildCoverFrames(pm);        // schräg + Spiegelung + Ambilight
+            // Dominante Cover-Farbe weiterhin für Zeilen-Tint in der
+            // Sammeltabelle und den Glow der Status-Pille.
             coverAccent_ = coverAccentColor(pm, accent_);
-            if (coverGlow_) coverGlow_->setColor(coverAccent_);
         }
     }
+    // Ambilight-Stufen für das „Atmen" vorrendern: der Atem-Timer schaltet
+    // danach nur noch zwischen fertigen Pixmaps um, statt (wie früher über
+    // QGraphicsDropShadowEffect) pro Frame einen Blur zu berechnen.
+    void buildCoverFrames(const QPixmap& pm) {
+        coverFrames_.clear();
+        coverFrame_ = -1;
+        for (int i = 0; i < kGlowSteps; ++i) {
+            const int a = 95 + (120 * i) / (kGlowSteps - 1);      // 95…215
+            coverFrames_.push_back(makeCoverArt(pm, 150, kGlowPad, a));
+        }
+        if (!coverFrames_.empty()) {
+            coverFrame_ = 1;
+            cover_->setPixmap(coverFrames_[1]);
+        }
+    }
+    void clearCoverFrames() { coverFrames_.clear(); coverFrame_ = -1; }
     void previewTick() {
         if (ctl_->running() || prevBusy_.load() || scanBusy_.load()) return;
         std::string id;
@@ -1186,12 +1335,21 @@ private:
                 lastId_.clear();
                 cover_->setPixmap(QPixmap()); cover_->setText("kein\nCover");
                 alb_->setText("—"); setState(PanelState::Empty);
-                if (coverGlow_) coverGlow_->setColor(accent_);  // Glow zurück
+                clearCoverFrames();                 // Ambilight-Glow zurück
+                // Auch die Zeilen dieses Laufwerks aus der Sammeltabelle
+                // nehmen — sie gehören zur ausgeworfenen Disc.
+                if (onNewDisc) onNewDisc();
             }
             return;
         }
         if (id == lastId_) return;
         lastId_ = id;
+        // Disc-Wechsel: die Zeilen der VORIGEN Disc aus der Sammeltabelle
+        // werfen, bevor die neue Trackliste kommt. Bisher meldete nur der
+        // Rip-Pfad (Controller::discIdent) einen Wechsel — beim Wechseln ohne
+        // laufenden Rip (Turbo aus, Disc von Hand tauschen) blieb die alte
+        // Liste stehen und die neuen Titel mischten sich darunter.
+        if (onNewDisc) onNewDisc();
         prevBusy_ = true;
         setState(PanelState::Detected, "Disc erkannt — lade Cover …");
         if (onLog) onLog("Disc erkannt — lese Metadaten …");
@@ -1271,13 +1429,19 @@ private:
     PanelState        state_ = PanelState::Empty;
     QColor            stateColor_{0x9a, 0xa0, 0xaa};  // aktuelle Zustandsfarbe
     int               animPhase_ = 0;                 // Puls-Animation
-    QGraphicsDropShadowEffect* coverGlow_ = nullptr;
+    // Vorgerenderte Cover-Pixmaps mit Ambilight in aufsteigender Deckkraft
+    // (s. buildCoverFrames) + aktuell gezeigte Stufe.
+    static constexpr int kGlowSteps = 6;
+    static constexpr int kGlowPad   = 20;
+    std::vector<QPixmap> coverFrames_;
+    int               coverFrame_ = -1;
     QGraphicsDropShadowEffect* capGlow_ = nullptr;
     QString           ripId_;        // Disc-ID des laufenden Rips (Wechsel-Erkennung)
     QString           tag_;
     QLabel*           cover_;
     QLabel*           alb_;
     QLabel*           cap_;
+    QPushButton*      startBtn_  = nullptr;         // Einzelstart (Turbo aus)
     QPushButton*      cancelBtn_ = nullptr;         // Storno pro Laufwerk
     std::atomic<bool> pendingEject_{false};         // nach Abbruch auswerfen
     DiscScanWidget*   disc_;
@@ -1400,6 +1564,8 @@ public:
         }
         auto* t = new QTimer(this);
         connect(t, &QTimer::timeout, this, [this]{
+            // Verdecktes/minimiertes Fenster: gar nicht erst neu zeichnen.
+            if (!isVisible()) return;
             tick_++;
             if (pulsing_ && ++pulseTick_ >= kPulseDur) pulsing_ = false;
             update();
@@ -1418,26 +1584,20 @@ public:
 protected:
     void paintEvent(QPaintEvent*) override {
         QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing, true);
         const double w = width(), h = height();
-        // Dunkle Basis (leichter Vertikal-Verlauf).
-        QLinearGradient base(0, 0, 0, h);
-        base.setColorAt(0.0, QColor(0x1a, 0x1e, 0x27));
-        base.setColorAt(1.0, QColor(0x14, 0x17, 0x1e));
-        p.fillRect(rect(), base);
-        // Drei weiche, langsam kreisende Farb-Glows.
-        static const QColor blob[3] = { QColor(0x39,0x87,0xe5),
-                                        QColor(0x90,0x85,0xe9),
-                                        QColor(0x19,0x9e,0x70) };
-        for (int b = 0; b < 3; ++b) {
-            const double ph = tick_ * 0.006 + b * 2.1;
-            const double bx = w * (0.5 + 0.42 * std::sin(ph));
-            const double by = h * (0.5 + 0.42 * std::cos(ph * 0.73));
-            QRadialGradient rg(QPointF(bx, by), w * 0.4);
-            QColor c = blob[b]; c.setAlpha(30); rg.setColorAt(0.0, c);
-            c.setAlpha(0);      rg.setColorAt(1.0, c);
-            p.fillRect(rect(), rg);
-        }
+        // Basis + die drei wandernden Farb-Glows sind der teure Teil: vier
+        // Alpha-Blends über die volle Fensterfläche, 17x pro Sekunde. Auf
+        // schwacher Hardware (U-CPU, Software-Raster) frisst das einen ganzen
+        // Kern. Die Glows kriechen aber mit ~0,006 rad/Tick, sind also extrem
+        // träge — deshalb landen sie in einem Cache-Pixmap in halber
+        // Auflösung, das nur jeden kBgEvery-ten Tick neu entsteht. Sichtbar
+        // ist der Unterschied nicht (weiche Radial-Verläufe skalieren
+        // verlustfrei genug), gespart wird ein Vielfaches.
+        if (bg_.isNull() || bgSize_ != size() || tick_ - bgTick_ >= kBgEvery)
+            rebuildBackdrop();
+        p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        p.drawPixmap(rect(), bg_);
+        p.setRenderHint(QPainter::Antialiasing, true);
         // Status-Puls: radialer Fade in die Statusfarbe und wieder zurück.
         // Hüllkurve sin(pi·t): 0→1→0 über kPulseDur Ticks (weicher Herzschlag).
         if (pulsing_) {
@@ -1469,9 +1629,44 @@ protected:
         }
     }
 private:
+    // Basis-Verlauf + die drei kreisenden Glows in halber Auflösung in den
+    // Cache malen. Aufrufer: paintEvent, wenn der Cache leer/veraltet ist
+    // oder sich die Fenstergröße geändert hat.
+    void rebuildBackdrop() {
+        bgSize_ = size();
+        bgTick_ = tick_;
+        const int pw = std::max(1, width()  / 2);
+        const int ph = std::max(1, height() / 2);
+        QPixmap pm(pw, ph);
+        QPainter q(&pm);
+        q.setRenderHint(QPainter::Antialiasing, true);
+        const double w = pw, h = ph;
+        QLinearGradient base(0, 0, 0, h);
+        base.setColorAt(0.0, QColor(0x1a, 0x1e, 0x27));
+        base.setColorAt(1.0, QColor(0x14, 0x17, 0x1e));
+        q.fillRect(pm.rect(), base);
+        static const QColor blob[3] = { QColor(0x39,0x87,0xe5),
+                                        QColor(0x90,0x85,0xe9),
+                                        QColor(0x19,0x9e,0x70) };
+        for (int b = 0; b < 3; ++b) {
+            const double phb = tick_ * 0.006 + b * 2.1;
+            const double bx = w * (0.5 + 0.42 * std::sin(phb));
+            const double by = h * (0.5 + 0.42 * std::cos(phb * 0.73));
+            QRadialGradient rg(QPointF(bx, by), w * 0.4);
+            QColor c = blob[b]; c.setAlpha(30); rg.setColorAt(0.0, c);
+            c.setAlpha(0);      rg.setColorAt(1.0, c);
+            q.fillRect(pm.rect(), rg);
+        }
+        bg_ = pm;
+    }
     struct Star { double x, y, speed, size, phase; };
     std::vector<Star> stars_;
     int tick_ = 0;
+    // Backdrop-Cache (Basis + Glows), s. paintEvent/rebuildBackdrop.
+    QPixmap bg_;
+    QSize   bgSize_;
+    int     bgTick_ = -1000;
+    static constexpr int kBgEvery = 4;     // Cache-Neuaufbau alle 4 Ticks
     // Status-Puls-Zustand
     static constexpr int kPulseDur = 30;   // ~1,8 s bei 60 ms/Tick
     bool   pulsing_   = false;
@@ -1530,7 +1725,17 @@ public:
         turbo_->setToolTip(QString::fromUtf8(
             "An: nach jeder CD automatisch auswerfen und die nächste "
             "rippen, bis gestoppt.\nAus: jedes Laufwerk rippt nur die "
-            "aktuell eingelegte CD."));
+            "aktuell eingelegte CD — dann hat jede Disc-Karte einen "
+            "eigenen ▶-Knopf für den Einzelstart."));
+        // Turbo aus → Einzelstart-Knopf auf jeder Disc-Karte einblenden.
+        connect(turbo_, &QCheckBox::toggled, this, [this](bool on) {
+            for (auto* p : panels_) p->setManualMode(!on);
+            log_->appendPlainText(on
+                ? QString::fromUtf8("🔥 Turbo an — „Alle starten\" rippt im "
+                                    "Dauerlauf weiter.")
+                : QString::fromUtf8("▶ Turbo aus — jede Disc-Karte hat jetzt "
+                                    "einen eigenen Start-Knopf."));
+        });
         auto* setB   = new QPushButton(QString::fromUtf8("⚙  Einstellungen…"));
         auto* scanB  = new QPushButton("⊙  Alle scannen");
         auto* startB = new QPushButton("▶  Alle starten");
@@ -1543,15 +1748,30 @@ public:
         bar->addWidget(stopB);
         root->addLayout(bar);
         auto* colsW = new QWidget;
+        colsW_ = colsW;
         cols_ = new QHBoxLayout(colsW);
         cols_->setSpacing(10);
         cols_->addStretch(1);                      // links: zentriert die
         cols_->addStretch(1);                      // rechts:  Spaltengruppe
-        auto* sc = new QScrollArea;
+        // Karten-Zone durchscheinend: Scrollbereich, sein Viewport und der
+        // Spalten-Container malen keinen eigenen Hintergrund, damit der
+        // Glitzer-Layer auch neben und zwischen den Disc-Karten sichtbar ist
+        // (vorher lag hier eine opake Fläche und der Effekt kam nur in der
+        // halbtransparenten Tabelle durch). Die Karten selbst behalten ihren
+        // deckenden Hintergrund — der ID-Selektor #drivePanel ist
+        // spezifischer als die transparenten Regeln hier.
+        colsW->setAttribute(Qt::WA_NoSystemBackground, true);
+        colsW->setAutoFillBackground(false);
+        sc_ = new QScrollArea;
+        auto* sc = sc_;
         sc->setWidget(colsW);
         sc->setWidgetResizable(true);
         sc->setFrameShape(QFrame::NoFrame);
-        // (sc kommt weiter unten in den ziehbaren Splitter)
+        sc->viewport()->setAutoFillBackground(false);
+        sc->viewport()->setAttribute(Qt::WA_NoSystemBackground, true);
+        sc->setStyleSheet("QScrollArea { background:transparent; border:0; }"
+                          "QScrollArea > QWidget > QWidget"
+                          " { background:transparent; }");
         tbl_ = new QTableWidget(0, 5);
         tbl_->setHorizontalHeaderLabels(
             { "Laufwerk", "#", "Titel", "Status", "%" });
@@ -1592,35 +1812,20 @@ public:
         log_->setReadOnly(true);
         log_->setMaximumBlockCount(4000);
         log_->setMinimumHeight(70);
-        // Ziehbarer, „fancy" Trenner zwischen Disc-Karten (oben) und
-        // Tabelle+Log (unten): am leuchtenden Griff nach oben/unten ziehen,
-        // um dem einen oder anderen Bereich mehr Platz zu geben.
         auto* lower = new QWidget;
         auto* lowerV = new QVBoxLayout(lower);
         lowerV->setContentsMargins(0, 0, 0, 0);
         lowerV->setSpacing(6);
         lowerV->addWidget(tbl_, 3);
         lowerV->addWidget(log_, 1);
-        auto* split = new QSplitter(Qt::Vertical);
-        split->setObjectName("mainSplit");
-        split->addWidget(sc);
-        split->addWidget(lower);
-        split->setStretchFactor(0, 3);
-        split->setStretchFactor(1, 2);
-        split->setChildrenCollapsible(false);
-        split->setHandleWidth(14);
-        // Leuchtender Griff mit Verlauf + Hover-Glow.
-        split->setStyleSheet(QString::fromUtf8(
-            "QSplitter#mainSplit::handle:vertical {"
-            " background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
-            "   stop:0 rgba(57,135,229,0), stop:0.5 rgba(120,150,235,90),"
-            "   stop:1 rgba(57,135,229,0));"
-            " margin:4px 60px; border-radius:4px; }"
-            "QSplitter#mainSplit::handle:vertical:hover {"
-            " background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
-            "   stop:0 rgba(57,135,229,0), stop:0.5 rgba(150,180,255,220),"
-            "   stop:1 rgba(57,135,229,0)); }"));
-        root->addWidget(split, 1);
+        // Die Karten-Zone bekommt eine feste Höhe (aus dem Karteninhalt
+        // abgeleitet, s. syncCardsHeight) und wächst beim Vergrößern des
+        // Fensters nicht mit — der zusätzliche Platz gehört Tabelle und Log,
+        // die ihn auch brauchen. Damit entfällt der frühere ziehbare Trenner:
+        // bei fixierter Oberkante hätte sein Griff nichts mehr zu verschieben.
+        root->addWidget(sc, 0);
+        root->addWidget(lower, 1);
+        syncCardsHeight();
         connect(scanB, &QPushButton::clicked, this,
             [this] { for (auto* p : panels_) p->scan(); });
         connect(startB, &QPushButton::clicked, this,
@@ -1637,25 +1842,54 @@ public:
             [this] { for (auto* p : panels_) p->stop(); });
         connect(setB, &QPushButton::clicked, this,
             [this] { openSettings(); });
-        // Initiale Laufwerke + Hotplug: alle 3 s neue erkannte Laufwerke
-        // on-the-fly als Spalte addieren (Gruppe bleibt zentriert).
+        // Initiale Laufwerke + Hotplug: neu erkannte Laufwerke on-the-fly als
+        // Spalte addieren (Gruppe bleibt zentriert).
+        //
+        // list_optical_devices() öffnet und probt JEDEN Laufwerksknoten
+        // (cdio_get_devices) und kanonisiert die Pfade. Solange die Laufwerke
+        // idle sind, kostet das nichts — während sie rippen, hängt so ein
+        // open()/ioctl() aber gut und gern eine halbe bis ganze Sekunde im
+        // Kernel. Früher lief das alle 3 s direkt im GUI-Thread: die
+        // Oberfläche stand dabei jedes Mal sichtbar still (auf latitude01
+        // gemessen: 39 % der Zeit im D-State, Blöcke bis 1,5 s).
+        // Jetzt: Enumeration im Worker-Thread, Ergebnis per Queued-Connection
+        // zurück, Intervall 10 s, und während laufender Rips gar nicht erst
+        // gesucht — neue Laufwerke steckt man nicht mitten im Rip an.
         std::vector<std::string> devs = cdr::list_optical_devices();
         if (devs.empty()) devs = base.device_list();
         for (const auto& d : devs) addPanel(d);
         auto* hot = new QTimer(this);
         connect(hot, &QTimer::timeout, this, [this] {
-            for (const auto& d : cdr::list_optical_devices()) {
-                bool known = false;
-                for (auto* p : panels_)
-                    if (p->device() == d) { known = true; break; }
-                if (!known) {
-                    addPanel(d);
-                    log_->appendPlainText("[hotplug] Laufwerk erkannt: " +
-                        QString::fromStdString(d));
-                }
-            }
+            if (hotBusy_.load()) return;              // Vorgänger läuft noch
+            if (anyRipActive()) return;               // irgendwo wird gerippt
+            for (auto* p : panels_)                   // Scan/Vorschau aktiv
+                if (p->busy()) return;
+            hotBusy_ = true;
+            if (hotThr_.joinable()) hotThr_.join();   // beendeter Vorgänger
+            hotThr_ = std::thread([this] {
+                std::vector<std::string> found;
+                try { found = cdr::list_optical_devices(); } catch (...) {}
+                QMetaObject::invokeMethod(this, [this, found] {
+                    for (const auto& d : found) {
+                        bool known = false;
+                        for (auto* p : panels_)
+                            if (p->device() == d) { known = true; break; }
+                        if (!known) {
+                            addPanel(d);
+                            log_->appendPlainText("[hotplug] Laufwerk erkannt: " +
+                                QString::fromStdString(d));
+                        }
+                    }
+                    hotBusy_ = false;
+                }, Qt::QueuedConnection);
+            });
         });
-        hot->start(3000);
+        hot->start(10000);
+    }
+    ~MultiWindow() override {
+        // Enumerations-Thread sauber einsammeln, bevor das Fenster (und damit
+        // das invokeMethod-Ziel) verschwindet.
+        if (hotThr_.joinable()) hotThr_.join();
     }
 protected:
     // Hält den animierten Hintergrund auf Größe des content-Widgets und
@@ -1684,10 +1918,22 @@ private:
                                  "<b>[%2]</b> %3")
             .arg(p->accent().name(), p->tag(), msg.toHtmlEscaped()));
     }
+    // Feste Höhe der Karten-Zone: so hoch wie die Disc-Karten selbst, plus
+    // Platz für die waagerechte Scrollleiste, sobald mehr Karten als
+    // Fensterbreite da sind. Nach jedem addPanel neu bestimmt, damit auch ein
+    // per Hotplug nachgemeldetes Laufwerk vollständig zu sehen ist.
+    void syncCardsHeight() {
+        if (!sc_ || !colsW_) return;
+        int h = std::max(140, colsW_->sizeHint().height());
+        if (auto* hb = sc_->horizontalScrollBar())
+            h += hb->sizeHint().height();
+        sc_->setFixedHeight(h + 6);
+    }
     void addPanel(const std::string& dev) {
         auto* colsW = cols_->parentWidget();
         int idx = (int)panels_.size();
         auto* p = new DrivePanel(base_, dev, driveAccent(idx), colsW);
+        p->setManualMode(!turbo_->isChecked());   // gilt auch für Hotplug-LW
         panels_.push_back(p);
         cols_->insertWidget(cols_->count() - 1, p);  // vor rechtem Stretch
         connect(p->controller(), &Controller::trackState, this,
@@ -1709,6 +1955,7 @@ private:
             "<b>%1 Laufwerk(e)</b> — pro Laufwerk eine "
             "<i>unterschiedliche</i> Disc einlegen, dann 'Alle starten'.")
             .arg((int)panels_.size()));
+        syncCardsHeight();          // Karten-Zone an die neue Karte anpassen
     }
     int ensureRow(int drive, int t) {
         QString key = QString::number(drive) + "-" + QString::number(t);
@@ -1829,6 +2076,12 @@ private:
     QHBoxLayout*             cols_ = nullptr;
     QLabel*                  hdr_  = nullptr;
     QCheckBox*               turbo_ = nullptr;      // Dauerlauf-Schalter
+    QScrollArea*             sc_    = nullptr;      // Karten-Zone (fixe Höhe)
+    QWidget*                 colsW_ = nullptr;      // Spalten-Container darin
+    // Hotplug-Enumeration im Hintergrund (s. Konstruktor): ein Thread zur
+    // Zeit, im Destruktor eingesammelt.
+    std::thread              hotThr_;
+    std::atomic<bool>        hotBusy_{false};
     BackgroundFx*            fx_ = nullptr;         // animierter Hintergrund
     RipProgressDelegate*     progressDelegate_ = nullptr;
     std::vector<DrivePanel*> panels_;
@@ -2214,20 +2467,21 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
     cover_->setCursor(Qt::PointingHandCursor);
     cover_->setToolTip("Tipp: draufklicken 😉");
     cover_->installEventFilter(this);            // Cover-Easter-Egg
-    // Atmender Glow in Cover-Farbe (wie im Multi-Fenster).
-    coverGlow_ = new QGraphicsDropShadowEffect(this);
-    coverGlow_->setBlurRadius(28);
-    coverGlow_->setColor(coverAccent_);
-    coverGlow_->setOffset(0, 0);
-    cover_->setGraphicsEffect(coverGlow_);
+    // Atmender Ambilight-Glow aus den Cover-Randfarben (wie im Multi-Fenster):
+    // die Stufen sind vorgerendert, der Timer schaltet nur das Pixmap um.
     {
         auto* gt = new QTimer(this);
         gt->setInterval(55);
         connect(gt, &QTimer::timeout, this, [this]{
             mainAnimPhase_ = (mainAnimPhase_ + 1) % 360;
-            if (coverGlow_) {
-                double s = 0.5 + 0.5 * std::sin(mainAnimPhase_ * 3.14159265 / 180.0);
-                coverGlow_->setBlurRadius(22 + 14 * s);   // atmet 22..36
+            if (coverFrames_.empty()) return;
+            const double s = 0.5 + 0.5 *
+                std::sin(mainAnimPhase_ * 3.14159265 / 180.0);
+            int idx = (int)std::lround(s * (coverFrames_.size() - 1));
+            idx = std::clamp(idx, 0, (int)coverFrames_.size() - 1);
+            if (idx != coverFrame_) {
+                coverFrame_ = idx;
+                cover_->setPixmap(coverFrames_[idx]);
             }
         });
         gt->start();
@@ -2769,13 +3023,7 @@ void MainWindow::onAlbumReady(const QString& aa0, const QString& at0,
         }
         if (!manualCoverPath_.isEmpty()) {
             QPixmap p(manualCoverPath_);
-            if (!p.isNull()) {
-                QPixmap sc = p.scaled(cover_->size(), Qt::KeepAspectRatio,
-                                      Qt::SmoothTransformation);
-                cover_->setPixmap(sc);
-                coverAccent_ = coverAccentColor(sc, coverAccent_);
-                if (coverGlow_) coverGlow_->setColor(coverAccent_);
-            }
+            if (!p.isNull()) setCoverFrames(p);
             ctl_->setCover(manualCoverPath_);
         }
         bannerLbl_->setText(QString::fromUtf8(
@@ -2786,20 +3034,44 @@ void MainWindow::onAlbumReady(const QString& aa0, const QString& at0,
     }
 }
 
+// Cover ins Label setzen und die Ambilight-Stufen dafür vorrendern. Das Label
+// hat im Layout eine feste Fläche — der Glow-Rand muss also INNERHALB dieser
+// Fläche liegen, das Cover selbst wird entsprechend etwas kleiner skaliert.
+void MainWindow::setCoverFrames(const QPixmap& src) {
+    coverFrames_.clear();
+    coverFrame_ = -1;
+    if (src.isNull()) return;
+    constexpr int pad = 16, steps = 6;
+    const QSize box = cover_->size();
+    QSize inner(std::max(16, box.width() - pad * 2),
+                std::max(16, box.height() - pad * 2));
+    QPixmap cov = src.scaled(inner, Qt::KeepAspectRatio,
+                             Qt::SmoothTransformation);
+    for (int i = 0; i < steps; ++i) {
+        const int alpha = 95 + (120 * i) / (steps - 1);        // 95…215
+        QPixmap out(cov.width() + pad * 2, cov.height() + pad * 2);
+        out.fill(Qt::transparent);
+        QPainter p(&out);
+        p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        QPixmap amb = coverAmbilight(cov, cov.size(), pad, alpha);
+        if (!amb.isNull()) p.drawPixmap(0, 0, amb);
+        p.drawPixmap(pad, pad, cov);
+        p.end();
+        coverFrames_.push_back(out);
+    }
+    coverFrame_ = 1;
+    cover_->setPixmap(coverFrames_[1]);
+    // Dominante Farbe weiterhin für Tints/Status-Glow.
+    coverAccent_ = coverAccentColor(cov, coverAccent_);
+}
+
 void MainWindow::onCoverReady(const QString& path) {
     // Manuell gewähltes Cover hat Vorrang — Auto-Erkennungs-Cover ignorieren.
     if (manualAlbum_.has_value() && manualDiscId_ == lastDiscId_ &&
         !manualCoverPath_.isEmpty() && path != manualCoverPath_)
         return;
     QPixmap p(path);
-    if (!p.isNull()) {
-        QPixmap scaled = p.scaled(cover_->size(), Qt::KeepAspectRatio,
-                                  Qt::SmoothTransformation);
-        cover_->setPixmap(scaled);
-        // Glow-Farbe aus dem Cover ziehen.
-        coverAccent_ = coverAccentColor(scaled, coverAccent_);
-        if (coverGlow_) coverGlow_->setColor(coverAccent_);
-    }
+    if (!p.isNull()) setCoverFrames(p);
 }
 
 void MainWindow::onPickCover() {
@@ -3186,6 +3458,7 @@ void MainWindow::resetDiscState() {
     if (albArtist_)   albArtist_->clear();
     if (albTitle_)    albTitle_->clear();
     if (albYear_)     albYear_->clear();
+    coverFrames_.clear(); coverFrame_ = -1;   // Ambilight-Stufen verwerfen
     if (cover_)       { cover_->setPixmap(QPixmap());
                         cover_->setText("kein\nCover"); }
     scanDiscId_.clear();

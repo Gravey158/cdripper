@@ -26,6 +26,16 @@
   <developer_name>Dennis</developer_name>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="1.9.19" date="2026-07-25">
+      <description>
+        <p>Einzelstart pro Laufwerk: Ist „Turbo (Dauerlauf)" ausgeschaltet, hat jetzt jede Disc-Karte im Multi-Fenster einen eigenen ▶-Knopf, der genau die dort eingelegte CD rippt — vorher ließ sich nur über „Alle starten" gemeinsam loslegen. Während ein Rip läuft, ist der Knopf gesperrt; mit eingeschaltetem Turbo bleibt er ausgeblendet.</p>
+        <p>Ruckeln im Multi-Fenster behoben: Die Laufwerkssuche für die Hotplug-Erkennung lief alle 3 Sekunden im Oberflächen-Thread und öffnete dabei jedes Laufwerk. Während des Rippens blockierte das die gesamte Oberfläche für bis zu anderthalb Sekunden am Stück — sichtbar als regelmäßiges Stocken der Animationen. Die Suche läuft jetzt im Hintergrund, seltener (alle 10 s) und pausiert komplett, solange gerippt oder gescannt wird.</p>
+        <p>Der animierte Hintergrund kostet deutlich weniger Rechenzeit: Basis-Verlauf und die drei wandernden Farb-Glows werden zwischengespeichert und nur noch jeden vierten Frame neu berechnet (sie bewegen sich ohnehin sehr langsam), die Glitzer weiterhin flüssig darüber. Bei verdecktem oder minimiertem Fenster wird gar nicht mehr gezeichnet. Das entlastet vor allem schwächere Rechner und Notebooks im Akkubetrieb.</p>
+        <p>Der Cover-Glow ist jetzt ein echtes Ambilight: Er nimmt die Randfarben des Covers auf und setzt sie nach außen fort — blauer Himmel am oberen Bildrand leuchtet oben blau, eine rote Jacke unten leuchtet unten rot. Vorher lag rings um das Cover ein einfarbiger Schein in der „dominanten" Farbe, und weil dafür schlicht der kräftigste Einzelpixel gewählt wurde, bekam praktisch jedes Cover mit irgendeinem roten Detail einen roten Glow. Der Glow atmet weiterhin, kostet aber weniger Rechenzeit als zuvor (vorgerenderte Stufen statt Weichzeichner pro Bild). Die daneben noch verwendete Einzelfarbe für Zeilen-Tint und Status-Pille wird nun flächengewichtet bestimmt, trifft also den Gesamteindruck des Covers.</p>
+        <p>Beim Disc-Wechsel ohne laufenden Rip (Turbo aus, Disc von Hand tauschen) blieb die Titelliste der vorherigen CD in der Sammeltabelle stehen und die neuen Titel mischten sich darunter. Jetzt werden die Zeilen des betroffenen Laufwerks beim Wechsel und beim Auswerfen sauber entfernt.</p>
+        <p>Aufgeräumtes Multi-Fenster: Der Bereich mit den Disc-Karten ist durchscheinend, der animierte Hintergrund schimmert also auch dort durch, und er hat eine feste Höhe passend zu den Karten — der restliche Platz gehört jetzt Titelliste und Protokoll, statt bei jedem Vergrößern des Fensters zur Hälfte an eine fast leere Kartenfläche zu gehen. Der bisherige ziehbare Trenner entfällt damit.</p>
+      </description>
+    </release>
     <release version="1.9.18" date="2026-07-07">
       <description>
         <p>Zwei Ärgernisse beim Rippen mit manuell gewählten Metadaten behoben: (1) Der MusicBrainz-„Release wählen"-Dialog erscheint nicht mehr, wenn die Metadaten bereits manuell (per Metadaten-Suche) gesetzt wurden — cdripper nimmt stumm die manuelle Wahl. (2) Erscheint der Dialog doch (ohne manuelle Wahl), bricht „Abbrechen" jetzt den Rip ab, statt stillschweigend mit einer geratenen Veröffentlichung weiterzurippen.</p>
