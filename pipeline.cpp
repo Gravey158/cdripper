@@ -131,19 +131,27 @@ void Pipeline::emit_progress(bool force) {
 
 // ── Disc-Loop ──────────────────────────────────────────────────────────────────
 void Pipeline::run(const std::atomic<bool>& stop, bool once) {
-    std::unique_ptr<Drive> drv;
+    // Laufwerk EINMAL testweise öffnen (existiert es? Rechte da?) und sofort
+    // wieder schließen. Früher lebte dieses Drive-Objekt über die gesamte
+    // Pipeline-Laufzeit — im Dauerlauf also dauerhaft. Damit stand der
+    // Geräteknoten permanent offen, und weil der Kernel CDROMEJECT mit EBUSY
+    // ablehnt, sobald ein Gerät mehr als einmal geöffnet ist, schlug der
+    // Auswurf mal fehl und mal nicht (je nachdem, ob gerade zusätzlich
+    // gepollt wurde). Benutzt wurde das Objekt seit dem Umbau auf
+    // „jeder Poll frisch" ohnehin nicht mehr.
     try {
-        drv = std::make_unique<Drive>(cfg_.device);
+        Drive probe(cfg_.device);
+        (void)probe;
     } catch (const std::exception& e) {
         if (cb_.onFatal) cb_.onFatal(e.what());
         return;
     }
     std::string last_id;
     while (!stop.load()) {
-        if (!wait_for_new_disc(*drv, stop, last_id)) break;
+        if (!wait_for_new_disc(stop, last_id)) break;
         if (stop.load()) break;
         try {
-            process_disc(*drv, stop, last_id);
+            process_disc(stop, last_id);
         } catch (const std::exception& e) {
             if (cb_.onDiscDone) cb_.onDiscDone(false, e.what());
             if (cb_.onLog) cb_.onLog(std::string("Fehler: ") + e.what());
@@ -176,7 +184,7 @@ void Pipeline::run(const std::atomic<bool>& stop, bool once) {
 // Medienwechsel nach Auto-Eject oft NICHT mit (Kernel bindet den
 // Media-Change-Status an ein frisches open) → sonst „hängt ewig, neue
 // CD wird ignoriert". `drv` wird hier bewusst nicht mehr benutzt.
-bool Pipeline::wait_for_new_disc(Drive& /*drv*/, const std::atomic<bool>& stop,
+bool Pipeline::wait_for_new_disc(const std::atomic<bool>& stop,
                                  const std::string& last_id) {
     bool saw_empty = last_id.empty();
     if (cb_.onWaiting) cb_.onWaiting("Lege die (nächste) Audio-CD ein …");
@@ -207,7 +215,7 @@ bool Pipeline::wait_for_new_disc(Drive& /*drv*/, const std::atomic<bool>& stop,
 }
 
 // ── Eine Disc durch das Fließband ──────────────────────────────────────────────
-void Pipeline::process_disc(Drive& drv, const std::atomic<bool>& stop,
+void Pipeline::process_disc(const std::atomic<bool>& stop,
                             std::string& last_id) {
     DiscIdent ident = read_disc_ident(cfg_.device);
     if (cb_.onDiscIdent) cb_.onDiscIdent(ident);

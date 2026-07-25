@@ -26,6 +26,13 @@
   <developer_name>Dennis</developer_name>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="1.9.26" date="2026-07-25">
+      <description>
+        <p>Auswerfen klappt jetzt zuverlässig. Bisher hielt die Anwendung den Geräteknoten während des gesamten Laufs geöffnet — ein Überbleibsel: Das Laufwerksobjekt wurde einmal angelegt und durchgereicht, aber seit dem Umbau auf frisches Öffnen bei jeder Abfrage nirgends mehr benutzt. Der Linux-Kernel lehnt den Auswurfbefehl grundsätzlich ab, sobald ein Laufwerk mehr als einmal geöffnet ist. Deshalb ging der Auswurf mal durch und mal nicht — je nachdem, ob zufällig gerade zusätzlich abgefragt wurde. Das Laufwerk wird beim Start nur noch kurz auf Erreichbarkeit geprüft und sofort wieder freigegeben.</p>
+        <p>Der Ersatzweg über SCSI-Befehle, der für die USB-Slim-Laufwerke gedacht ist, entriegelt das Medium jetzt zuerst. Ohne diesen Schritt quittiert das Laufwerk den Auswurf mit „Entnahme verhindert", und der Ersatzweg lief ins Leere.</p>
+        <p>Scheitert ein Auswurf doch, steht der genaue Grund in der Fehlerausgabe statt nur „reagierte nicht".</p>
+      </description>
+    </release>
     <release version="1.9.25" date="2026-07-25">
       <description>
         <p>Absturz beim Start behoben (betraf 1.9.24): Die Berechnung des feinen Rauschens gegen die Farbstufen rechnete mit vorzeichenbehafteten Zahlen und lief dabei über den Wertebereich hinaus. Das ist im C++-Standard undefiniertes Verhalten, und der Compiler erzeugte daraus Code, der beim ersten Zeichnen in ungültigen Speicher schrieb — das Programm beendete sich sofort. Die Rechnung läuft jetzt vorzeichenlos, und alle Bildschleifen prüfen zusätzlich, ob der Speicher wirklich bereitsteht.</p>

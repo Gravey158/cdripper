@@ -86,9 +86,9 @@ public:
     void set_cover(const std::string& path);   // GUI: Cover manuell ersetzen
 
 private:
-    bool wait_for_new_disc(Drive& drv, const std::atomic<bool>& stop,
+    bool wait_for_new_disc(const std::atomic<bool>& stop,
                            const std::string& last_id);
-    void process_disc(Drive& drv, const std::atomic<bool>& stop,
+    void process_disc(const std::atomic<bool>& stop,
                       std::string& last_id);
     Album album_copy();
     void  emit_progress(bool force);

@@ -2970,20 +2970,29 @@ bool Drive::has_audio() const {
 // generische CDROMEJECT-ioctl unzuverlässig reagieren (die beiden
 // HL-DT-ST-USB-Brenner an diesem PC gehörten dazu). Gibt true bei
 // erfolgreichem SCSI-Kommando.
-static bool scsi_start_stop_eject(int fd) {
-    unsigned char cdb[6]  = { 0x1B, 0, 0, 0, 0x02, 0 };   // LoEj=1, Start=0
+static bool scsi_cmd6(int fd, const unsigned char cdb[6]) {
     unsigned char sense[32] = {0};
     sg_io_hdr_t io{};
     io.interface_id    = 'S';
     io.dxfer_direction = SG_DXFER_NONE;
-    io.cmd_len         = sizeof(cdb);
-    io.cmdp            = cdb;
+    io.cmd_len         = 6;
+    io.cmdp            = const_cast<unsigned char*>(cdb);
     io.sbp             = sense;
     io.mx_sb_len       = sizeof(sense);
     io.timeout         = 15000;              // 15 s
     if (::ioctl(fd, SG_IO, &io) < 0) return false;
-    // status 0 = GOOD; masked_status 0 ebenso. Sonst SCSI-Fehler.
     return io.status == 0 && io.host_status == 0;
+}
+static bool scsi_start_stop_eject(int fd) {
+    // Erst ALLOW MEDIUM REMOVAL (0x1E, prevent=0): Solange das Medium auf
+    // SCSI-Ebene verriegelt ist, quittiert START STOP UNIT mit „Medium
+    // Removal Prevented" und der Fallback lief ins Leere. util-linux' eject
+    // schickt genau diese Reihenfolge — und die hat auf latitude01 von der
+    // Shell aus zuverlässig funktioniert, während cdripper scheiterte.
+    const unsigned char allow[6] = { 0x1E, 0, 0, 0, 0x00, 0 };
+    scsi_cmd6(fd, allow);                                 // best effort
+    const unsigned char eject[6] = { 0x1B, 0, 0, 0, 0x02, 0 };  // LoEj=1, Start=0
+    return scsi_cmd6(fd, eject);
 }
 
 // Robustes Auswerfen: libcdio/paranoia sperrt während Rip/Scan die Klappe
@@ -2996,12 +3005,20 @@ static bool scsi_start_stop_eject(int fd) {
 // wird.
 static bool do_eject_fd(int fd) {
     ::ioctl(fd, CDROM_LOCKDOOR, 0);          // Klappe entriegeln (Lock weg)
+    int last_errno = 0;
     for (int i = 0; i < 8; ++i) {
         if (::ioctl(fd, CDROMEJECT, 0) == 0) return true;
+        last_errno = errno;
         if (scsi_start_stop_eject(fd))       return true;   // USB-Fallback
         ::usleep(500 * 1000);
         ::ioctl(fd, CDROM_LOCKDOOR, 0);      // Lock erneut lösen (falls neu)
     }
+    // Für die Fehlersuche festhalten, WORAN es lag. EBUSY heißt fast immer:
+    // der Geräteknoten ist (auch) woanders offen — der Kernel lehnt
+    // CDROMEJECT dann grundsätzlich ab.
+    std::fprintf(stderr, "cdripper: Auswurf fehlgeschlagen, letzter Fehler: %s%s\n",
+                 std::strerror(last_errno),
+                 last_errno == EBUSY ? " (Gerät ist noch geöffnet)" : "");
     return false;
 }
 void Drive::eject() const    { do_eject_fd(fd_); }
