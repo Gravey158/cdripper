@@ -25,6 +25,9 @@ int run_probe_worker(const std::string& dev, int start_track,
 
 #ifdef HAVE_QT
 #include <QApplication>
+#include <QLockFile>
+#include <QDir>
+#include <QMessageBox>
 #include "gui.h"
 #endif
 
@@ -159,6 +162,40 @@ int main(int argc, char** argv) {
         cfg.device  = dev_overrides.front();
     }
     if (dry) cfg.dry_run = true;
+
+#ifdef HAVE_QT
+    // ── Single-Instance-Guard ────────────────────────────────────────────
+    // Nur EINE benutzerseitige Instanz darf das optische Laufwerk anfassen —
+    // sonst konkurrieren mehrere cdripper-Prozesse um /dev/sr0 und die Reads
+    // haengen (beobachtet 2026-06-20: mehrere offene GUI-Fenster => Track-1-
+    // Hang). Liegt NACH dem Worker-Subprozess-Dispatch oben -> die vom Main
+    // gespawnten --rip-worker/--probe-worker werden NICHT geblockt; --version/
+    // --help kehren schon vorher zurueck. QLockFile ist PID-aware: ein toter
+    // Lock (Crash) wird automatisch erkannt -> kein manuelles Aufraeumen.
+    // (Nur HAVE_QT-Builds; der ausgelieferte Flatpak ist immer Qt -> deckt
+    //  GUI, CLI-Rip und --calibrate ab. Lock haelt bis main() zurueckkehrt.)
+    QLockFile cdr_single_instance(QDir::tempPath() + "/cdripper-single-instance.lock");
+    if (!cdr_single_instance.tryLock(0)) {
+        qint64 _pid = 0; QString _host, _appname;
+        cdr_single_instance.getLockInfo(&_pid, &_host, &_appname);
+        const std::string _msg =
+            "CD Ripper laeuft bereits (PID " + std::to_string(_pid) +
+            "). Bitte das bereits offene Fenster nutzen.";
+        std::cerr << _msg << "\n";
+#if defined(__APPLE__) || defined(_WIN32)
+        const bool _is_gui = !force_cli;
+#else
+        const bool _is_gui = !force_cli && (force_gui ||
+            std::getenv("DISPLAY") || std::getenv("WAYLAND_DISPLAY"));
+#endif
+        if (_is_gui) {
+            QApplication _a(argc, argv);
+            QMessageBox::information(nullptr, "CD Ripper",
+                QString::fromStdString(_msg));
+        }
+        return 3;
+    }
+#endif
 
     cdr::curl_global_setup();
     int rc = 0;

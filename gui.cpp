@@ -49,6 +49,13 @@
 #include <sstream>
 #include <QFont>
 #include <QProgressBar>
+#include <QStyledItemDelegate>
+#include <QGraphicsDropShadowEffect>
+#include <QLinearGradient>
+#include <QImage>
+#include <QSplitter>
+#include <QDialog>
+#include <QListWidgetItem>
 #include <QPushButton>
 #include <QShortcut>
 #include <QSpacerItem>
@@ -78,17 +85,35 @@
 
 // ───────────────────────────── Controller ─────────────────────────────────────
 
+// Prozessweiter Zähler laufender Rips über ALLE Controller/Fenster hinweg.
+// Damit lässt sich der Settings-Dialog global sperren, solange irgendwo
+// (Einzel- ODER Multi-Fenster) gerippt wird — vorher prüfte jedes Fenster
+// nur seinen eigenen Controller, sodass man die Einstellungen übers jeweils
+// andere Fenster doch öffnen konnte. (Deklaration vor ~Controller, damit der
+// Leak-Ausgleich dort darauf zugreifen kann.)
+static std::atomic<int> g_active_rips{0};
+bool anyRipActive() { return g_active_rips.load() > 0; }
+
 Controller::Controller(QObject* p) : QObject(p) {}
 
 Controller::~Controller() {
     stop_ = true;
     if (worker_.joinable()) worker_.join();
+    // joinWorker() wird per QueuedConnection gepostet und läuft nach der
+    // Zerstörung NICHT mehr → sein g_active_rips.fetch_sub bliebe aus und der
+    // globale Zähler leakt (der Einstellungs-Dialog wäre dann bis zum
+    // App-Neustart gesperrt — passiert z. B. beim Schließen des Multi-Fensters
+    // während eines laufenden Rips). Genau einmal nachholen, falls joinWorker
+    // noch nicht lief (running_ noch true).
+    if (running_.exchange(false))
+        g_active_rips.fetch_sub(1);
 }
 
 void Controller::start(const cdr::Config& cfg, bool once) {
     if (running_.load()) return;
     stop_ = false;
     running_ = true;
+    g_active_rips.fetch_add(1);
 
     cdr::Callbacks cb;
     cb.onWaiting = [this](const std::string& m) {
@@ -122,6 +147,8 @@ void Controller::start(const cdr::Config& cfg, bool once) {
     };
     cb.onChooseRelease = [this](const std::vector<std::string>& l,
                                 int def) -> int {
+        // Manuelle Metadaten gesetzt → nicht nachfragen, stumm Default nehmen.
+        if (suppressChooser_.load()) return def;
         QStringList ql;
         for (const auto& s : l) ql << QString::fromStdString(s);
         int res = def;
@@ -176,6 +203,7 @@ void Controller::joinWorker() {
     if (worker_.joinable()) worker_.join();
     pl_.reset();
     running_ = false;
+    g_active_rips.fetch_sub(1);
     emit finished();
 }
 
@@ -194,9 +222,11 @@ int Controller::chooseReleaseSlot(QStringList labels, int def) {
     QString sel = QInputDialog::getItem(
         nullptr, "MusicBrainz — Release wählen",
         "Diese Disc passt auf mehrere Releases (Edition/Land).\n"
-        "Bitte die richtige wählen:",
+        "Bitte die richtige wählen — oder Abbrechen, um den Rip zu stoppen\n"
+        "(dann per „Metadaten suchen…\" das richtige Album wählen).",
         labels, def < labels.size() ? def : 0, false, &ok);
-    if (!ok) return def;
+    // Abbrechen → Rip abbrechen (nicht stumm mit dem Default weiterrippen).
+    if (!ok) { requestStop(); return def; }
     int i = labels.indexOf(sel);
     return i >= 0 ? i : def;
 }
@@ -212,11 +242,23 @@ static QString mmss(double s) {
     return QString("%1:%2").arg(t / 60).arg(t % 60, 2, 10, QChar('0'));
 }
 
-// KDE/Freedesktop-Notification (best effort; notify-send via Session-DBus,
-// XDG_RUNTIME_DIR ist im Container gemountet).
+// Wird beim Anlegen des MainWindow-Tray-Icons gesetzt → notify() kann darüber
+// plattformübergreifend (Linux/mac/Windows) Benachrichtigungen zeigen.
+static QSystemTrayIcon* g_notify_tray = nullptr;
+
+// Desktop-Notification (best effort). Bevorzugt das System-Tray-Icon (portabel);
+// auf Linux zusätzlich notify-send (KDE/Freedesktop) als Fallback, falls kein
+// Tray verfügbar ist. Früher NUR notify-send → auf mac/Windows funktionslos.
 static void notify(const QString& title, const QString& body) {
+    if (g_notify_tray && QSystemTrayIcon::supportsMessages()) {
+        g_notify_tray->showMessage(title, body,
+                                   QSystemTrayIcon::Information, 5000);
+        return;
+    }
+#ifdef __linux__
     QProcess::startDetached("notify-send",
         { "-a", "CD Ripper", "-i", "media-optical-audio", title, body });
+#endif
 }
 
 // QMessageBox mit erzwungener Mindestbreite (Default ist oft zu schmal).
@@ -510,6 +552,82 @@ private:
 // macOS behält die native Titelleiste; nur Win/Linux werden randlos mit eigener
 // Leiste (Titel links, Min/Max/Close rechts). Von MainWindow UND MultiWindow
 // genutzt → vor beiden definiert.
+
+#if !defined(Q_OS_WIN) && !defined(Q_OS_MACOS)
+// Randlos-Resize unter Linux (X11 UND Wayland): hier gibt es kein natives
+// Hit-Testing wie WM_NCHITTEST — stattdessen übergibt startSystemResize()
+// die gepackte Kante an den Fenstermanager (KWin/Mutter ziehen dann selbst,
+// inkl. Live-Cursor). Greifzonen wie im Win-Pfad: Kanten 8 px, Ecken 14 px.
+// Beide randlosen Fenster rufen das aus event(); die Titelleiste prüft es
+// in ihrem mousePressEvent zuerst (oberste 8 px = Resize, nicht Drag).
+static Qt::Edges framelessEdgesAt(const QWidget* w, const QPoint& pt) {
+    const QRect r = w->rect();
+    const int b = 8, c = 14;
+    const bool L = pt.x() < b, R = pt.x() >= r.width()  - b;
+    const bool T = pt.y() < b, B = pt.y() >= r.height() - b;
+    const bool Lc = pt.x() < c, Rc = pt.x() >= r.width()  - c;
+    const bool Tc = pt.y() < c, Bc = pt.y() >= r.height() - c;
+    Qt::Edges e;
+    // Ecken zuerst (größere Zone) — wie winFramelessEvent().
+    if ((Tc || Bc) && (Lc || Rc) && ((Tc && Lc) || (Tc && Rc) ||
+                                     (Bc && Lc) || (Bc && Rc))) {
+        if (Lc) e |= Qt::LeftEdge;
+        if (Rc) e |= Qt::RightEdge;
+        if (Tc) e |= Qt::TopEdge;
+        if (Bc) e |= Qt::BottomEdge;
+        return e;
+    }
+    if (L) e |= Qt::LeftEdge;
+    if (R) e |= Qt::RightEdge;
+    if (T) e |= Qt::TopEdge;
+    if (B) e |= Qt::BottomEdge;
+    return e;
+}
+
+static Qt::CursorShape framelessCursorFor(Qt::Edges e) {
+    const bool L = e & Qt::LeftEdge, R = e & Qt::RightEdge;
+    const bool T = e & Qt::TopEdge,  B = e & Qt::BottomEdge;
+    if ((T && L) || (B && R)) return Qt::SizeFDiagCursor;
+    if ((T && R) || (B && L)) return Qt::SizeBDiagCursor;
+    if (L || R)               return Qt::SizeHorCursor;
+    if (T || B)               return Qt::SizeVerCursor;
+    return Qt::ArrowCursor;
+}
+
+// Aus event() der randlosen Fenster aufrufen (braucht Qt::WA_Hover am Fenster).
+// true = Event verbraucht (Resize gestartet).
+static bool framelessLinuxResizeEvent(QWidget* w, QEvent* ev) {
+    if (w->isMaximized() || w->isFullScreen()) return false;
+    switch (ev->type()) {
+    case QEvent::HoverMove:
+    case QEvent::HoverEnter: {
+        // QCursor::pos() statt Event-API → identisch unter Qt5 und Qt6.
+        const Qt::Edges e =
+            framelessEdgesAt(w, w->mapFromGlobal(QCursor::pos()));
+        const Qt::CursorShape cur = framelessCursorFor(e);
+        if (cur == Qt::ArrowCursor) w->unsetCursor(); else w->setCursor(cur);
+        return false;
+    }
+    case QEvent::HoverLeave:
+        w->unsetCursor();
+        return false;
+    case QEvent::MouseButtonPress: {
+        auto* me = static_cast<QMouseEvent*>(ev);
+        if (me->button() != Qt::LeftButton) return false;
+        const Qt::Edges e = framelessEdgesAt(w, me->pos());
+        if (!e) return false;
+        if (auto* wh = w->windowHandle()) {
+            wh->startSystemResize(e);
+            return true;
+        }
+        return false;
+    }
+    default:
+        return false;
+    }
+}
+#endif  // !Q_OS_WIN && !Q_OS_MACOS
+
 #ifndef Q_OS_MACOS
 class FramelessTitleBar : public QWidget {
 public:
@@ -517,6 +635,7 @@ public:
         : QWidget(win), win_(win) {
         setObjectName("framelessTitleBar");
         setFixedHeight(34);
+        setAttribute(Qt::WA_Hover, true);   // Cursor-Feedback obere Resize-Zone
         auto* h = new QHBoxLayout(this);
         h->setContentsMargins(12, 0, 0, 0);
         h->setSpacing(0);
@@ -548,12 +667,36 @@ protected:
 #ifndef Q_OS_WIN
     // Linux: Ziehen via startSystemMove, Doppelklick = Max-Toggle.
     // (Auf Windows erledigt das WM_NCHITTEST/HTCAPTION nativ — inkl. Aero-Snap.)
+    // Die Leiste liegt am oberen Fensterrand → obere Greifzone (und die
+    // Ecken links/rechts) gehören dem Resize, erst darunter beginnt Drag.
     void mousePressEvent(QMouseEvent* e) override {
-        if (e->button() == Qt::LeftButton && childAt(e->pos()) == nullptr)
-            if (auto* wh = win_->windowHandle()) wh->startSystemMove();
+        if (e->button() != Qt::LeftButton) return;
+        auto* wh = win_->windowHandle();
+        if (!wh) return;
+        if (!win_->isMaximized()) {
+            // mapTo statt globalPosition(): identische API in Qt5 und Qt6.
+            const Qt::Edges edges =
+                framelessEdgesAt(win_, mapTo(win_, e->pos()));
+            if (edges) { wh->startSystemResize(edges); return; }
+        }
+        if (childAt(e->pos()) == nullptr) wh->startSystemMove();
     }
     void mouseDoubleClickEvent(QMouseEvent* e) override {
         if (e->button() == Qt::LeftButton) toggleMax();
+    }
+    // Cursor-Feedback für die Resize-Zone innerhalb der Leiste (das Fenster
+    // selbst bekommt Hover-Events nur außerhalb seiner Kinder).
+    bool event(QEvent* ev) override {
+        if (ev->type() == QEvent::HoverMove || ev->type() == QEvent::HoverEnter) {
+            const Qt::CursorShape cur = win_->isMaximized()
+                ? Qt::ArrowCursor
+                : framelessCursorFor(framelessEdgesAt(
+                      win_, win_->mapFromGlobal(QCursor::pos())));
+            if (cur == Qt::ArrowCursor) unsetCursor(); else setCursor(cur);
+        } else if (ev->type() == QEvent::HoverLeave) {
+            unsetCursor();
+        }
+        return QWidget::event(ev);
     }
 #endif
 private:
@@ -626,6 +769,90 @@ static bool winFramelessEvent(QWidget* w, QWidget* titleBar,
 }
 #endif  // Q_OS_WIN
 
+// Farbcodierung der Laufwerke im Multi-Fenster: feste, gedeckte Palette,
+// fürs Dunkel-Theme (#262b33) validiert (Kontrast ≥3:1, CVD-Abstand ok).
+// Zuordnung strikt nach Panel-Index — nie umsortieren, die Reihenfolge
+// ist Teil der Farbenblind-Sicherheit. Identität hängt nie an Farbe allein
+// (Laufwerks-Tag steht immer daneben).
+static QColor driveAccent(int idx) {
+    static const QColor pal[] = {
+        QColor(0x39, 0x87, 0xe5),   // Blau
+        QColor(0x19, 0x9e, 0x70),   // Grün
+        QColor(0xc9, 0x85, 0x00),   // Amber
+        QColor(0x90, 0x85, 0xe9),   // Violett
+        QColor(0xe6, 0x67, 0x67),   // Rot
+        QColor(0xd5, 0x51, 0x81),   // Magenta
+    };
+    return pal[idx % 6];
+}
+
+// „Bling"-Cover: das Album leicht schräg (Pseudo-3D, wie aufgeklappt) mit
+// einer ausgefadeten Spiegelung darunter rendern. Gibt ein transparentes
+// Pixmap der Gesamtgröße (Cover + Neigung + Spiegelung) zurück; der farbige
+// Glow ringsum kommt separat über einen QGraphicsDropShadowEffect am Label.
+static QPixmap makeCoverArt(const QPixmap& src, int side) {
+    if (src.isNull()) return {};
+    QPixmap cover = src.scaled(side, side, Qt::KeepAspectRatio,
+                               Qt::SmoothTransformation);
+    const int w = cover.width(), h = cover.height();
+    const int reflH = h / 3;            // Spiegelungshöhe
+    const int pad   = 10;               // Rand für Neigung/Schatten
+    QPixmap out(w + pad * 2, h + reflH + pad);
+    out.fill(Qt::transparent);
+    QPainter pt(&out);
+    pt.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    pt.setRenderHint(QPainter::Antialiasing, true);
+    // Pseudo-3D: ganz dezenter vertikaler Shear → das Cover „steht" leicht
+    // schräg, als wäre es aufgeklappt. Bewusst subtil, damit es lesbar bleibt.
+    QTransform tf;
+    tf.translate(pad, 0);
+    tf.shear(0.0, -0.05);
+    tf.translate(0, h * 0.05);
+    pt.setTransform(tf);
+    pt.drawPixmap(0, 0, cover);
+    // Spiegelung: vertikal gespiegeltes Cover mit Alpha-Verlauf (oben ~35 %
+    // → unten transparent).
+    QImage mir = cover.toImage().mirrored(false, true);
+    QPixmap refl = QPixmap::fromImage(mir).copy(0, 0, w, reflH);
+    QPixmap reflFaded(w, reflH);
+    reflFaded.fill(Qt::transparent);
+    {
+        QPainter rp(&reflFaded);
+        rp.drawPixmap(0, 0, refl);
+        rp.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+        QLinearGradient g(0, 0, 0, reflH);
+        g.setColorAt(0.0, QColor(0, 0, 0, 90));
+        g.setColorAt(1.0, QColor(0, 0, 0, 0));
+        rp.fillRect(0, 0, w, reflH, g);
+    }
+    pt.drawPixmap(0, h + 3, reflFaded);
+    return out;
+}
+
+// Dominante, „lebendige" Farbe eines Covers — für Glow/Akzent, der zum Bild
+// passt. Sampelt ein verkleinertes Abbild und wählt den Pixel mit der besten
+// Sättigung×Helligkeit (keine grauen/zu dunklen/zu hellen). Bei fast
+// farblosen (s/w-)Covern → fallback auf die Laufwerksfarbe.
+static QColor coverAccentColor(const QPixmap& src, const QColor& fallback) {
+    if (src.isNull()) return fallback;
+    QImage img = src.scaled(28, 28, Qt::IgnoreAspectRatio,
+                            Qt::SmoothTransformation).toImage();
+    QColor best = fallback; double bestScore = -1.0;
+    for (int y = 0; y < img.height(); ++y)
+        for (int x = 0; x < img.width(); ++x) {
+            QColor c = img.pixelColor(x, y);
+            int h, s, v; c.getHsv(&h, &s, &v);
+            double mid = (v > 45 && v < 240) ? 1.0 : 0.25;   // Extreme meiden
+            double score = (s / 255.0) * (v / 255.0) * mid;
+            if (score > bestScore) { bestScore = score; best = c; }
+        }
+    int h, s, v; best.getHsv(&h, &s, &v);
+    if (s < 45) return fallback;                 // zu grau → Laufwerksfarbe
+    best.setHsv(h, std::min(255, s + 45),        // fürs Leuchten aufsatten
+                std::min(255, std::max(v, 150) + 30));
+    return best;
+}
+
 // Additiv & eigenständig: Single-Drive-MainWindow bleibt unberührt. Eine
 // Spalte je Laufwerk (Cover+Album oben, Live-Disc darunter), eine gemeinsame
 // Rip-Tabelle unten. Je Spalte ein eigener Controller (= eigene Pipeline +
@@ -634,8 +861,8 @@ static bool winFramelessEvent(QWidget* w, QWidget* titleBar,
 class DrivePanel : public QWidget {
 public:
     DrivePanel(const cdr::Config& base, const std::string& dev,
-               QWidget* parent = nullptr)
-        : QWidget(parent), cfg_(base), dev_(dev) {
+               const QColor& accent, QWidget* parent = nullptr)
+        : QWidget(parent), cfg_(base), dev_(dev), accent_(accent) {
         cfg_.device = dev;            // Kind-Pipeline = Single-Device
         cfg_.devices.clear();
         tag_ = QString::fromStdString(dev);
@@ -647,10 +874,17 @@ public:
         // blendet sich nahtlos ein statt heller als die Box zu wirken.
         setObjectName("drivePanel");
         setAttribute(Qt::WA_StyledBackground, true);
+        // Akzentfarbe des Laufwerks als oberer Kartenrand (Basis-QSS aus
+        // main.cpp wird hier pro Instanz um den Border ergänzt).
+        setStyleSheet(QString(
+            "QWidget#drivePanel { background:#262b33; border-radius:12px;"
+            " border-top:3px solid %1; }").arg(accent_.name()));
         auto* v = new QVBoxLayout(this);
         v->setContentsMargins(10, 10, 10, 10);
-        // Kopf: Laufwerkspfad + Laufwerks-ID (Hersteller/Modell).
-        auto* hd = new QLabel("<b>" + QString::fromStdString(dev) + "</b>" +
+        // Kopf: Farbpunkt + Laufwerkspfad + Laufwerks-ID (Hersteller/Modell).
+        auto* hd = new QLabel(
+            "<span style='color:" + accent_.name() + ";'>●</span> <b>" +
+            QString::fromStdString(dev) + "</b>" +
             (did.empty() ? QString() :
              "<br><span style='color:#9aa0aa;font-size:8pt;'>" +
              QString::fromStdString(did).toHtmlEscaped() + "</span>"));
@@ -658,46 +892,110 @@ public:
         hd->setTextFormat(Qt::RichText);
         v->addWidget(hd);
         cover_ = new QLabel;
-        cover_->setFixedSize(150, 150);
-        cover_->setFrameShape(QFrame::StyledPanel);
+        cover_->setFixedSize(170, 210);   // Platz für Neigung + Spiegelung
         cover_->setAlignment(Qt::AlignCenter);
         cover_->setText("kein\nCover");
+        // Farbiger, atmender Glow rund ums Cover in der Laufwerksfarbe
+        // (blurRadius wird vom Anim-Timer sanft pulsiert → „lebt").
+        coverGlow_ = new QGraphicsDropShadowEffect(this);
+        coverGlow_->setBlurRadius(26);
+        coverGlow_->setColor(accent_);
+        coverGlow_->setOffset(0, 0);
+        cover_->setGraphicsEffect(coverGlow_);
         v->addWidget(cover_, 0, Qt::AlignHCenter);
         alb_ = new QLabel("—");
         alb_->setWordWrap(true);
         alb_->setAlignment(Qt::AlignHCenter);
         alb_->setFixedWidth(210);
+        // Dezenter Text-Glow am Album-Titel.
+        { auto* ag = new QGraphicsDropShadowEffect(this);
+          ag->setBlurRadius(10); ag->setColor(QColor(0,0,0,180));
+          ag->setOffset(0, 1); alb_->setGraphicsEffect(ag); }
         v->addWidget(alb_, 0, Qt::AlignHCenter);
         disc_ = new DiscScanWidget;
         disc_->setFixedSize(160, 160);
         v->addWidget(disc_, 0, Qt::AlignHCenter);
-        cap_ = new QLabel("bereit");
+        cap_ = new QLabel;
         cap_->setAlignment(Qt::AlignHCenter);
-        cap_->setStyleSheet("color:#9aa0aa;");
+        // Farbiger Glow an der Status-Pille (Farbe/Stärke setzt setState).
+        capGlow_ = new QGraphicsDropShadowEffect(this);
+        capGlow_->setBlurRadius(18);
+        capGlow_->setOffset(0, 0);
+        cap_->setGraphicsEffect(capGlow_);
         v->addWidget(cap_);
+        // Storno pro Laufwerk: laufenden Rip abbrechen + CD auswerfen (z. B.
+        // bei falsch erkanntem Album/Cover). Nur aktiv während ein Rip läuft.
+        cancelBtn_ = new QPushButton(QString::fromUtf8("⏏ Abbrechen & Auswerfen"));
+        cancelBtn_->setToolTip("Diesen Rip stoppen und die CD auswerfen.");
+        cancelBtn_->setEnabled(false);
+        connect(cancelBtn_, &QPushButton::clicked, this,
+                [this] { stopAndEject(); });
+        v->addWidget(cancelBtn_);
+        setState(PanelState::Empty);
         v->addStretch(1);
         ctl_ = new Controller(this);   // Kind → dtor stoppt/joint Worker
+        // Cancel-Button nur während eines laufenden Rips aktiv.
+        connect(ctl_, &Controller::finished, this,
+                [this] {
+                    cancelBtn_->setEnabled(false);
+                    if (pendingEject_) {           // Storno → jetzt auswerfen
+                        pendingEject_ = false;
+                        std::string d = dev_;
+                        std::thread([d]{ cdr::eject_device(d); }).detach();
+                        plog("Rip abgebrochen — CD wird ausgeworfen.");
+                    }
+                });
         connect(ctl_, &Controller::albumReady, this,
             [this](const QString& aa, const QString& at, const QString&,
-                   const QStringList&, const QStringList&) {
-                alb_->setText("<b>" + at + "</b><br>" + aa); });
+                   const QStringList& ti, const QStringList&) {
+                alb_->setText("<b>" + at + "</b><br>" + aa);
+                // Track-Titel in die Sammeltabelle: im Turbo-Dauerlauf läuft
+                // die Vorschau (onTracks) nicht, sonst blieben die Titel leer
+                // und würden von den AccurateRip-Meldungen ersetzt.
+                if (onTracks && !ti.isEmpty()) onTracks(ti); });
         connect(ctl_, &Controller::coverReady, this,
             [this](const QString& p) { setCover(p); });
+        // Neue Disc im (Dauerlauf-)Rip: Anzeige des Laufwerks für die neue CD
+        // frisch machen — Cover/Album/Trackliste des vorigen Albums weg, und
+        // die Sammeltabelle für dieses Laufwerk zurücksetzen (onNewDisc).
+        connect(ctl_, &Controller::discIdent, this,
+            [this](const QString& id, int) {
+                if (id != ripId_) {
+                    ripId_ = id;
+                    cover_->setPixmap(QPixmap());
+                    cover_->setText("lädt …");
+                    alb_->setText("—");
+                    if (onNewDisc) onNewDisc();
+                }
+                setState(PanelState::Detected); });
         connect(ctl_, &Controller::discScanInit, this,
             [this](int lo, int hi) { disc_->beginScan(lo, hi);
-                cap_->setText("Scan läuft …"); });
+                // Nur die Preflight-Scan-Phase (vor dem Rip) als „Scan"
+                // markieren. Beim Rip wird derselbe Init für die Live-Karte
+                // gefeuert — dann NICHT auf Scan zurückschalten.
+                if (state_ == PanelState::Detected ||
+                    state_ == PanelState::Empty)
+                    setState(PanelState::Scanning); });
         connect(ctl_, &Controller::discScanCell, this,
-            [this](int l, int s) { disc_->addCell(l, s);
-                if (s == 2) cap_->setText("Lesefehler erkannt"); });
+            // Nur zeichnen — der Zustand darf hier NICHT geändert werden,
+            // sonst überschreiben die Live-Rip-Zellen den „Rip läuft"-Status
+            // („scan läuft" blieb sonst während des ganzen Rips hängen).
+            [this](int l, int s) { disc_->addCell(l, s); });
         connect(ctl_, &Controller::discScanCursor, this,
             [this](int l) { disc_->setCursor(l); });
         connect(ctl_, &Controller::ripProgress, this,
-            [this](double f) { disc_->setRipProgress(f); });
+            [this](double f) { disc_->setRipProgress(f);
+                setState(PanelState::Ripping); });
+        connect(ctl_, &Controller::trackState, this,
+            [this](int, int, double, const QString&) {
+                setState(PanelState::Ripping); });
         connect(ctl_, &Controller::waiting, this,
-            [this](const QString& m) { cap_->setText(m); });
+            [this](const QString& m) {
+                // „Werfe CD aus" / „warte auf nächste CD" → entnehmbar.
+                setState(PanelState::Ejected, m); });
         connect(ctl_, &Controller::discDone, this,
             [this](bool ok, const QString&) {
-                cap_->setText(ok ? "fertig ✓" : "Fehler"); });
+                setState(ok ? PanelState::Done : PanelState::Error); });
         // Auto-Cover: solange NICHT gerippt wird, Disc beobachten und
         // Cover/Album automatisch erkennen (lean: MB + Cover, sonst
         // Platzhalter). Aktive Probe + frische Drive je Poll (D-State-
@@ -705,6 +1003,21 @@ public:
         auto* pt = new QTimer(this);
         connect(pt, &QTimer::timeout, this, [this] { previewTick(); });
         pt->start(3000);
+        // Puls-Animation: lässt Cover- und Status-Glow sanft atmen. Bei
+        // aktiven Zuständen (Scan/Rip) kräftiger, sonst ruhig.
+        auto* anim = new QTimer(this);
+        connect(anim, &QTimer::timeout, this, [this] {
+            animPhase_ = (animPhase_ + 1) % 100000;
+            const bool busy = state_ == PanelState::Ripping ||
+                              state_ == PanelState::Scanning;
+            const double s = std::sin(animPhase_ * 0.09);      // -1..1
+            if (coverGlow_)
+                coverGlow_->setBlurRadius((busy ? 30 : 24) +
+                                          (busy ? 16 : 7) * (s * 0.5 + 0.5));
+            if (capGlow_)
+                capGlow_->setBlurRadius(14 + 8 * (s * 0.5 + 0.5));
+        });
+        anim->start(55);
     }
     ~DrivePanel() override {
         prevStop_ = true;
@@ -712,8 +1025,37 @@ public:
         if (prevThr_.joinable()) prevThr_.join();
         if (scanThr_.joinable()) scanThr_.join();
     }
-    void start() { if (!ctl_->running()) ctl_->start(cfg_, false); }
+    // once=false → Dauerlauf (Turbo): nach jeder CD auswerfen, auf die
+    // nächste warten, weiter. once=true → nur die eingelegte CD.
+    void start(bool once) {
+        if (!ctl_->running()) { ctl_->start(cfg_, once);
+                                cancelBtn_->setEnabled(true); }
+    }
     void stop()  { ctl_->requestStop(); }
+    bool running() const { return ctl_->running(); }
+    // Storno pro Laufwerk: laufenden Rip abbrechen, danach (im finished-
+    // Handler) die CD auswerfen. Ohne laufenden Rip: nur auswerfen.
+    void stopAndEject() {
+        if (ctl_->running()) {
+            pendingEject_ = true;
+            plog("Abbruch angefordert — stoppe Rip, werfe dann aus …");
+            ctl_->requestStop();
+            cancelBtn_->setEnabled(false);
+        } else {
+            std::string d = dev_;
+            std::thread([d]{ cdr::eject_device(d); }).detach();
+            plog("CD wird ausgeworfen.");
+        }
+    }
+    // Neue Einstellungen aus dem Settings-Dialog übernehmen (Format, WebDAV,
+    // Preflight …). Der Gerätepfad dieses Panels bleibt fix — er gehört zur
+    // Spalte, nicht zur globalen Config. Greift beim nächsten Rip-Start.
+    void applyBaseConfig(const cdr::Config& base) {
+        std::string keep = dev_;
+        cfg_ = base;
+        cfg_.device = keep;
+        cfg_.devices.clear();
+    }
     // Standalone Disc-Qualitäts-Scan für dieses Panel (füllt den Ring live).
     // Eigener Thread + Stop-Flag, unabhängig vom Rip/Preview; pausiert die
     // Auto-Cover-Vorschau via scanBusy_ (sonst Drive-Poll-Kollision).
@@ -721,9 +1063,11 @@ public:
         if (ctl_->running() || scanBusy_.load()) return;
         std::string id;
         try { id = cdr::probe_disc_id(dev_); } catch (...) { id.clear(); }
-        if (id.empty()) { cap_->setText("keine Disc zum Scannen"); return; }
+        if (id.empty()) { setState(PanelState::Empty, "keine Disc zum Scannen");
+                          if (onLog) onLog("keine Disc zum Scannen"); return; }
         scanBusy_ = true;
-        cap_->setText("Scan läuft …");
+        setState(PanelState::Scanning);
+        if (onLog) onLog("Disc-Qualitäts-Scan gestartet …");
         std::string dev = dev_;
         int dens = cfg_.scan_density;
         if (scanStop_) scanStop_->store(true);
@@ -731,6 +1075,7 @@ public:
         auto stopF = scanStop_;
         if (scanThr_.joinable()) scanThr_.join();
         scanThr_ = std::thread([this, dev, dens, stopF] {
+            auto errCells = std::make_shared<std::atomic<int>>(0);
             int leadout = 0;
             try {                                   // Disc-Geometrie VOR dem Scan
                 cdr::DiscIdent di = cdr::read_disc_ident(dev);
@@ -743,7 +1088,8 @@ public:
             try {
                 cdr::disc_probe(dev,
                     [stopF] { return stopF->load(); },
-                    [this](int lba, int st, long) {            // Live-Zelle
+                    [this, errCells](int lba, int st, long) {  // Live-Zelle
+                        if (st == 2) errCells->fetch_add(1);
                         QMetaObject::invokeMethod(this, [this, lba, st] {
                             disc_->addCell(lba, st);
                         }, Qt::QueuedConnection);
@@ -755,8 +1101,13 @@ public:
                         }, Qt::QueuedConnection);
                     });
             } catch (...) {}
+            const int errs = errCells->load();
+            plog(errs == 0
+                ? QString::fromUtf8("Disc-Scan fertig — fehlerfrei ✓")
+                : QString::fromUtf8("Disc-Scan fertig — %1 Zelle(n) mit "
+                                    "Lesefehlern").arg(errs));
             QMetaObject::invokeMethod(this, [this] {
-                cap_->setText("Scan fertig");
+                setState(PanelState::Detected, "Scan fertig — Disc bereit");
                 scanBusy_ = false;
             }, Qt::QueuedConnection);
         });
@@ -764,14 +1115,67 @@ public:
     Controller* controller() const { return ctl_; }
     QString     tag() const { return tag_; }
     std::string device() const { return dev_; }
+    QColor      accent() const { return accent_; }
     // Von MultiWindow gesetzt: Trackliste aus der Preview → Sammeltabelle.
     std::function<void(const QStringList&)> onTracks;
+    // Von MultiWindow gesetzt: Panel-Ereignisse (Scan/Preview) → Sammel-Log.
+    // Bisher landeten dort nur Rip-Events; Scans liefen komplett stumm.
+    std::function<void(const QString&)> onLog;
+    // Von MultiWindow gesetzt: neue Disc erkannt → Tabellenzeilen des
+    // Laufwerks zurücksetzen (Dauerlauf-Refresh).
+    std::function<void()> onNewDisc;
+
+    // Lebenszyklus einer Disc im Panel — steuert Statuspille + Rahmenglow.
+    enum class PanelState { Empty, Detected, Scanning, Ripping, Done,
+                            Error, Ejected };
 private:
+    // Farbige Statuspille + farbiger Rahmenglow je Zustand. Die
+    // Laufwerks-Akzentfarbe (border-top) bleibt als Identität erhalten; der
+    // Zustand kommt als getönte Pille (cap_) und farbiger Panel-Rahmen dazu.
+    void setState(PanelState s, const QString& textOverride = QString()) {
+        state_ = s;
+        struct Vis { const char* col; const char* text; };
+        Vis vis;
+        switch (s) {
+            case PanelState::Empty:   vis = {"#9aa0aa", "bereit — Disc einlegen"}; break;
+            case PanelState::Detected:vis = {"#3987e5", "Disc erkannt"}; break;
+            case PanelState::Scanning:vis = {"#c98500", "Scan läuft …"}; break;
+            case PanelState::Ripping: vis = {"#199e70", "Rip läuft …"}; break;
+            case PanelState::Done:    vis = {"#22c07a", "fertig ✓ — CD entnehmbar"}; break;
+            case PanelState::Error:   vis = {"#e66767", "Fehler"}; break;
+            case PanelState::Ejected: vis = {"#17b0a0", "ausgeworfen — CD entnehmbar"}; break;
+        }
+        const QString col = vis.col;
+        stateColor_ = QColor(col);
+        if (capGlow_) capGlow_->setColor(stateColor_);   // Pillen-Glow = Status
+        cap_->setText(textOverride.isEmpty() ? QString::fromUtf8(vis.text)
+                                             : textOverride);
+        // Pille: getönter Hintergrund + farbiger Rand + kräftige Schrift.
+        cap_->setStyleSheet(QString(
+            "QLabel { color:%1; background:rgba(%2,%2,%2,0); "
+            "border:1px solid %1; border-radius:9px; padding:3px 10px; "
+            "font-weight:600; }").arg(col).arg(0));
+        // Panel-Rahmen: oben die Laufwerksfarbe (Identität), ringsum ein
+        // dezenter Zustandsglow.
+        setStyleSheet(QString(
+            "QWidget#drivePanel { background:#262b33; border-radius:12px;"
+            " border:1px solid %1; border-top:3px solid %2; }")
+            .arg(col, accent_.name()));
+    }
+    // Threadsicher ins Sammel-Log melden (Queued auf den GUI-Thread).
+    void plog(const QString& m) {
+        QMetaObject::invokeMethod(this, [this, m] {
+            if (onLog) onLog(m);
+        }, Qt::QueuedConnection);
+    }
     void setCover(const QString& p) {
         QPixmap pm(p);
-        if (!pm.isNull())
-            cover_->setPixmap(pm.scaled(150, 150,
-                Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        if (!pm.isNull()) {
+            cover_->setPixmap(makeCoverArt(pm, 150));   // schräg + Spiegelung
+            // Glow-Farbe aus dem Cover ziehen → passt sich dem Album an.
+            coverAccent_ = coverAccentColor(pm, accent_);
+            if (coverGlow_) coverGlow_->setColor(coverAccent_);
+        }
     }
     void previewTick() {
         if (ctl_->running() || prevBusy_.load() || scanBusy_.load()) return;
@@ -781,35 +1185,40 @@ private:
             if (!lastId_.empty()) {                 // Disc raus → zurücksetzen
                 lastId_.clear();
                 cover_->setPixmap(QPixmap()); cover_->setText("kein\nCover");
-                alb_->setText("—"); cap_->setText("bereit");
+                alb_->setText("—"); setState(PanelState::Empty);
+                if (coverGlow_) coverGlow_->setColor(accent_);  // Glow zurück
             }
             return;
         }
         if (id == lastId_) return;
         lastId_ = id;
         prevBusy_ = true;
-        cap_->setText("Disc erkannt — lade Cover …");
+        setState(PanelState::Detected, "Disc erkannt — lade Cover …");
+        if (onLog) onLog("Disc erkannt — lese Metadaten …");
         std::string dev = dev_, ua = cfg_.mb_useragent, tmp = cfg_.tmpdir;
         if (prevThr_.joinable()) prevThr_.join();
         prevThr_ = std::thread([this, dev, ua, tmp] {
-            QString at, aa, cov;
+            QString at, aa, cov, src;
             QStringList tl;                          // Trackliste (Titel)
             try {
                 cdr::DiscIdent di = cdr::read_disc_ident(dev);
                 cdr::Album al; bool have = false;     // volle Kette wie Hauptfenster
                 try {
                     auto c = cdr::mb_release_candidates(di.id, ua, di.toc);
-                    if (!c.empty()) { al = c[0]; have = true; }
+                    if (!c.empty()) { al = c[0]; have = true;
+                                      src = "MusicBrainz"; }
                 } catch (...) {}
                 if (!have) {                           // CDDB-Fallback
                     try { auto cd = cdr::cddb_lookup(di.toc, ua);
-                          if (cd) { al = *cd; have = true; } } catch (...) {}
+                          if (cd) { al = *cd; have = true; src = "CDDB"; }
+                    } catch (...) {}
                 }
                 if (!have) {                           // CD-TEXT-Fallback
                     auto c = cdr::cdtext_lookup(dev, di.toc_tracks);
-                    if (c) { al = *c; have = true; }
+                    if (c) { al = *c; have = true; src = "CD-TEXT"; }
                 }
-                if (!have) al = cdr::placeholder_album(di.toc_tracks);
+                if (!have) { al = cdr::placeholder_album(di.toc_tracks);
+                             src = "Platzhalter — nichts gefunden"; }
                 // Cover-Fallback: echter Treffer (CD-TEXT/CDDB) ohne MB-Release-ID
                 // → per Titelsuche eine Release finden, nur fürs Cover.
                 if (have && al.mb_release_id.empty() &&
@@ -822,14 +1231,27 @@ private:
                 aa = QString::fromStdString(al.artist);
                 for (const auto& trk : al.tracks)
                     tl << QString::fromStdString(trk.title);
+                plog(QString::fromUtf8("Metadaten [%1]: %2 — %3 (%4 Tracks)")
+                         .arg(src, aa, at).arg(tl.size()));
                 try {
-                    fs::path d = fs::path(tmp) / "mpreview";
+                    // Pro Laufwerk eigenes Verzeichnis: fetch_cover schreibt
+                    // fix <dir>/cover.jpg — bei gemeinsamem Verzeichnis über-
+                    // schreiben sich parallele Panel-Scans gegenseitig die
+                    // Datei (vertauschte/korrupte Cover beim Multi-Scan).
+                    std::string devtag = dev;
+                    auto slash = devtag.find_last_of('/');
+                    if (slash != std::string::npos) devtag.erase(0, slash + 1);
+                    fs::path d = fs::path(tmp) / ("mpreview-" + devtag);
                     std::error_code ec; fs::create_directories(d, ec);
                     fs::path out;
                     if (cdr::fetch_cover(al.mb_release_id, ua, d, out))
                         cov = QString::fromStdString(out.string());
                 } catch (...) {}
-            } catch (...) {}
+                plog(cov.isEmpty() ? "kein Cover gefunden"
+                                   : "Cover geladen");
+            } catch (...) {
+                plog("Disc-Vorschau fehlgeschlagen (Lesefehler?)");
+            }
             QMetaObject::invokeMethod(this, [this, at, aa, cov, tl] {
                 if (!at.isEmpty() || !aa.isEmpty())
                     alb_->setText("<b>" + at + "</b><br>" + aa);
@@ -837,17 +1259,27 @@ private:
                 // Trackliste sofort an die gemeinsame Tabelle melden
                 // (erscheint pro Laufwerk noch vor dem Rip).
                 if (onTracks && !tl.isEmpty()) onTracks(tl);
-                cap_->setText("bereit — Disc erkannt");
+                setState(PanelState::Detected, "bereit — Disc erkannt");
                 prevBusy_ = false;
             }, Qt::QueuedConnection);
         });
     }
     cdr::Config       cfg_;
     std::string       dev_;
+    QColor            accent_;       // Laufwerks-Farbcode (driveAccent)
+    QColor            coverAccent_;  // aus dem Cover gezogene Glow-Farbe
+    PanelState        state_ = PanelState::Empty;
+    QColor            stateColor_{0x9a, 0xa0, 0xaa};  // aktuelle Zustandsfarbe
+    int               animPhase_ = 0;                 // Puls-Animation
+    QGraphicsDropShadowEffect* coverGlow_ = nullptr;
+    QGraphicsDropShadowEffect* capGlow_ = nullptr;
+    QString           ripId_;        // Disc-ID des laufenden Rips (Wechsel-Erkennung)
     QString           tag_;
     QLabel*           cover_;
     QLabel*           alb_;
     QLabel*           cap_;
+    QPushButton*      cancelBtn_ = nullptr;         // Storno pro Laufwerk
+    std::atomic<bool> pendingEject_{false};         // nach Abbruch auswerfen
     DiscScanWidget*   disc_;
     Controller*       ctl_;
     std::string       lastId_;
@@ -857,6 +1289,194 @@ private:
     std::atomic<bool> scanBusy_{false};
     std::thread       scanThr_;
     std::shared_ptr<std::atomic<bool>> scanStop_;
+};
+
+// Fortschritts-Delegate für die %-Spalte der Multi-Rip-Tabelle: zeichnet
+// einen abgerundeten Balken (Füllung = Fortschritt) mit diagonaler
+// Schraffur, die – vom Animations-Timer über phase getrieben – nach rechts
+// fließt. Die aktiv rippende Zeile leuchtet grün und trägt ein Sparkle.
+// Werte kommen aus der Zelle: UserRole = Fortschritt 0..1, UserRole+1 =
+// „rippt gerade" (bool).
+class RipProgressDelegate : public QStyledItemDelegate {
+public:
+    int phase = 0;                       // Animations-Offset (Timer erhöht ihn)
+    explicit RipProgressDelegate(QObject* parent = nullptr)
+        : QStyledItemDelegate(parent) {}
+    void paint(QPainter* p, const QStyleOptionViewItem& opt,
+               const QModelIndex& idx) const override {
+        const double frac = std::clamp(idx.data(Qt::UserRole).toDouble(),
+                                       0.0, 1.0);
+        const bool active = idx.data(Qt::UserRole + 1).toBool();
+        QRect r = opt.rect.adjusted(5, 5, -5, -5);
+        p->save();
+        p->setRenderHint(QPainter::Antialiasing, true);
+        const int h = r.height();
+        // Track-Rille mit dezentem Tiefen-Verlauf (oben dunkler → unten
+        // minimal heller, wirkt eingelassen).
+        {
+            QLinearGradient bg(r.topLeft(), r.bottomLeft());
+            bg.setColorAt(0.0, QColor(0x15, 0x18, 0x1e));
+            bg.setColorAt(1.0, QColor(0x22, 0x27, 0x30));
+            p->setPen(Qt::NoPen);
+            p->setBrush(bg);
+            p->drawRoundedRect(r, h / 2, h / 2);
+        }
+        if (frac > 0.001) {
+            QRect fill(r.left(), r.top(),
+                       std::max(h, int(r.width() * frac)), r.height());
+            const QColor base = active ? QColor(0x22, 0xc0, 0x7a)   // grün
+                                       : QColor(0x29, 0x79, 0xff);  // blau
+            p->save();
+            QPainterPath clip; clip.addRoundedRect(r, h / 2, h / 2);
+            p->setClipPath(clip);
+            // Füllung als vertikaler Verlauf (glänzt oben, satt unten).
+            QLinearGradient g(fill.topLeft(), fill.bottomLeft());
+            g.setColorAt(0.0, base.lighter(145));
+            g.setColorAt(0.5, base);
+            g.setColorAt(1.0, base.darker(120));
+            p->setBrush(g); p->setPen(Qt::NoPen);
+            p->drawRect(fill);
+            // Fließende Diagonal-Schraffur im Füllbereich.
+            p->setClipRect(fill, Qt::IntersectClip);
+            p->setPen(QPen(QColor(255, 255, 255, active ? 60 : 40), 5));
+            const int step = 16;
+            for (int x = r.left() - h - step * 2 + (phase % step);
+                 x < fill.right() + h; x += step)
+                p->drawLine(x, r.bottom(), x + h, r.top());
+            // Glanzlicht oben (schmaler heller Streifen).
+            p->setPen(Qt::NoPen);
+            p->setBrush(QColor(255, 255, 255, 45));
+            p->drawRoundedRect(QRect(fill.left() + 2, fill.top() + 2,
+                                     fill.width() - 4, h / 3), h / 4, h / 4);
+            // Leuchtendes Fortschritts-Ende: pulsierender Glow am Füllrand
+            // (nur solange nicht voll).
+            if (frac < 0.999) {
+                const int gx = fill.right();
+                const int puls = 80 + (int)(60 * std::abs(std::sin(phase * 0.06)));
+                QRadialGradient rg(QPointF(gx, r.center().y()), h * 1.4);
+                QColor glow = base.lighter(160); glow.setAlpha(puls);
+                rg.setColorAt(0.0, glow);
+                glow.setAlpha(0); rg.setColorAt(1.0, glow);
+                p->setBrush(rg);
+                p->drawRect(QRect(gx - h, r.top(), h * 2, h));
+            }
+            p->restore();
+        }
+        // Prozent-Text mit dunkler Outline (Halo) → auf jedem Balken lesbar,
+        // löst die frühere Kollision Text↔Balkenfarbe.
+        QString txt = QString::number(int(frac * 100)) + "%";
+        if (active) txt = "✨ " + txt;
+        QFont f = opt.font; f.setBold(true); p->setFont(f);
+        p->setPen(QColor(0, 0, 0, 190));
+        for (int dx = -1; dx <= 1; ++dx)
+            for (int dy = -1; dy <= 1; ++dy)
+                if (dx || dy)
+                    p->drawText(opt.rect.translated(dx, dy),
+                                Qt::AlignCenter, txt);
+        p->setPen(QColor(0xff, 0xff, 0xff));
+        p->drawText(opt.rect, Qt::AlignCenter, txt);
+        p->restore();
+    }
+};
+
+// Animierter Hintergrund fürs Multi-Fenster: dunkle Basis, langsam wandernde
+// weiche Farb-Glows und aufsteigende funkelnde Glitzer-Partikel. Liegt als
+// unterster Layer hinter dem (transparent gehaltenen) Inhalt; die Panels/
+// Tabelle/Log decken ihre Bereiche ab, in den Lücken schimmert der Effekt.
+// Bewusst dezent gehalten — Bling ohne die Lesbarkeit zu stören.
+class BackgroundFx : public QWidget {
+public:
+    explicit BackgroundFx(QWidget* parent) : QWidget(parent) {
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        lower();
+        for (int i = 0; i < 70; ++i) {           // deterministisch verteilt
+            Star s;
+            s.x = ((i * 137 + 17) % 1000) / 1000.0;
+            s.y = ((i * 91 + 43) % 1000) / 1000.0;
+            s.speed = 0.15 + (i % 7) * 0.06;
+            s.size = 1.0 + (i % 5) * 0.5;
+            s.phase = (i % 13) * 0.5;
+            stars_.push_back(s);
+        }
+        auto* t = new QTimer(this);
+        connect(t, &QTimer::timeout, this, [this]{
+            tick_++;
+            if (pulsing_ && ++pulseTick_ >= kPulseDur) pulsing_ = false;
+            update();
+        });
+        t->start(60);
+    }
+    // Status-Puls (PS-UI-Vibe): der Hintergrund faded von seiner Farbe in die
+    // Statusfarbe (grün=Erfolg, rot=Fehler) und wieder zurück — ein Herzschlag,
+    // radial aus der Mitte. Retriggert einfach neu.
+    void pulse(const QColor& statusColor) {
+        pulseColor_ = statusColor;
+        pulseTick_  = 0;
+        pulsing_    = true;
+        update();
+    }
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const double w = width(), h = height();
+        // Dunkle Basis (leichter Vertikal-Verlauf).
+        QLinearGradient base(0, 0, 0, h);
+        base.setColorAt(0.0, QColor(0x1a, 0x1e, 0x27));
+        base.setColorAt(1.0, QColor(0x14, 0x17, 0x1e));
+        p.fillRect(rect(), base);
+        // Drei weiche, langsam kreisende Farb-Glows.
+        static const QColor blob[3] = { QColor(0x39,0x87,0xe5),
+                                        QColor(0x90,0x85,0xe9),
+                                        QColor(0x19,0x9e,0x70) };
+        for (int b = 0; b < 3; ++b) {
+            const double ph = tick_ * 0.006 + b * 2.1;
+            const double bx = w * (0.5 + 0.42 * std::sin(ph));
+            const double by = h * (0.5 + 0.42 * std::cos(ph * 0.73));
+            QRadialGradient rg(QPointF(bx, by), w * 0.4);
+            QColor c = blob[b]; c.setAlpha(30); rg.setColorAt(0.0, c);
+            c.setAlpha(0);      rg.setColorAt(1.0, c);
+            p.fillRect(rect(), rg);
+        }
+        // Status-Puls: radialer Fade in die Statusfarbe und wieder zurück.
+        // Hüllkurve sin(pi·t): 0→1→0 über kPulseDur Ticks (weicher Herzschlag).
+        if (pulsing_) {
+            const double t   = (double)pulseTick_ / kPulseDur;   // 0..1
+            const double env = std::sin(3.14159265 * t);         // 0→1→0
+            QRadialGradient pg(QPointF(w * 0.5, h * 0.5),
+                               std::max(w, h) * 0.78);
+            QColor c = pulseColor_;
+            c.setAlpha((int)(150 * env)); pg.setColorAt(0.0, c);
+            c.setAlpha((int)(45  * env)); pg.setColorAt(1.0, c);
+            p.fillRect(rect(), pg);
+        }
+        // Aufsteigende, funkelnde Glitzer.
+        p.setPen(Qt::NoPen);
+        for (const auto& s : stars_) {
+            double y = s.y - std::fmod(tick_ * s.speed * 0.0016, 1.0);
+            if (y < 0) y += 1.0;
+            const double px = s.x * w, py = y * h;
+            const double tw = 0.5 + 0.5 * std::sin(tick_ * 0.05 + s.phase);
+            const int a = int(35 + 150 * tw);
+            QColor core(210, 226, 255, a);
+            QRadialGradient g(QPointF(px, py), s.size * 4);
+            QColor gc = core; gc.setAlpha(a / 3); g.setColorAt(0.0, gc);
+            gc.setAlpha(0);                       g.setColorAt(1.0, gc);
+            p.setBrush(g);
+            p.drawEllipse(QPointF(px, py), s.size * 4, s.size * 4);
+            p.setBrush(core);
+            p.drawEllipse(QPointF(px, py), s.size * 0.7, s.size * 0.7);
+        }
+    }
+private:
+    struct Star { double x, y, speed, size, phase; };
+    std::vector<Star> stars_;
+    int tick_ = 0;
+    // Status-Puls-Zustand
+    static constexpr int kPulseDur = 30;   // ~1,8 s bei 60 ms/Tick
+    bool   pulsing_   = false;
+    int    pulseTick_ = 0;
+    QColor pulseColor_{0x35, 0xc7, 0x59};
 };
 
 class MultiWindow : public QWidget {
@@ -870,6 +1490,9 @@ public:
 #ifndef Q_OS_MACOS
         setWindowFlag(Qt::FramelessWindowHint);    // randlos wie MainWindow
 #endif
+#if !defined(Q_OS_WIN) && !defined(Q_OS_MACOS)
+        setAttribute(Qt::WA_Hover, true);          // Kanten-Resize (s. event())
+#endif
         // Äußeres Layout randlos; eigene Titelleiste oben, Inhalt im Container
         // (behält die normalen Ränder/Spacing des bisherigen Aufbaus).
         auto* outer = new QVBoxLayout(this);
@@ -881,15 +1504,40 @@ public:
 #endif
         auto* content = new QWidget;
         outer->addWidget(content, 1);
+        // Animierter Glitzer-/Glow-Hintergrund als unterster Layer. content
+        // wird transparent gehalten, damit der Effekt durchscheint; die
+        // Panels/Tabelle/Log haben eigene Hintergründe und decken ihre
+        // Bereiche ab.
+        content->setObjectName("multiContent");
+        // content malt KEINEN eigenen Hintergrund (kein Stylesheet → keine
+        // Kaskade auf Panels/Tabelle) → der fx_-Layer dahinter scheint durch.
+        // Die Panels/Tabelle behalten dadurch ihre eigenen opaken Hintergründe.
+        content->setAttribute(Qt::WA_NoSystemBackground, true);
+        fx_ = new BackgroundFx(content);
+        fx_->setGeometry(content->rect());
+        content->installEventFilter(this);         // Resize → fx_ nachziehen
         auto* root = new QVBoxLayout(content);     // restlicher Aufbau unverändert
         auto* bar  = new QHBoxLayout;
         hdr_ = new QLabel;
         bar->addWidget(hdr_);
         bar->addStretch(1);
+        // Turbo = Dauerlauf: alle Laufwerke rippen nach dem ersten Start
+        // kontinuierlich weiter (CD raus, nächste rein, Scan, Rip …), bis
+        // „Alle stoppen". Aus = jedes Laufwerk rippt nur die eingelegte CD.
+        // Für den Multi-Betrieb ist Dauerlauf der Normalfall → default an.
+        turbo_ = new QCheckBox(QString::fromUtf8("🔥 Turbo (Dauerlauf)"));
+        turbo_->setChecked(true);
+        turbo_->setToolTip(QString::fromUtf8(
+            "An: nach jeder CD automatisch auswerfen und die nächste "
+            "rippen, bis gestoppt.\nAus: jedes Laufwerk rippt nur die "
+            "aktuell eingelegte CD."));
+        auto* setB   = new QPushButton(QString::fromUtf8("⚙  Einstellungen…"));
         auto* scanB  = new QPushButton("⊙  Alle scannen");
         auto* startB = new QPushButton("▶  Alle starten");
         startB->setProperty("primary", true);
         auto* stopB  = new QPushButton("■  Alle stoppen");
+        bar->addWidget(turbo_);
+        bar->addWidget(setB);
         bar->addWidget(scanB);
         bar->addWidget(startB);
         bar->addWidget(stopB);
@@ -903,7 +1551,7 @@ public:
         sc->setWidget(colsW);
         sc->setWidgetResizable(true);
         sc->setFrameShape(QFrame::NoFrame);
-        root->addWidget(sc, 3);
+        // (sc kommt weiter unten in den ziehbaren Splitter)
         tbl_ = new QTableWidget(0, 5);
         tbl_->setHorizontalHeaderLabels(
             { "Laufwerk", "#", "Titel", "Status", "%" });
@@ -911,18 +1559,84 @@ public:
         tbl_->setEditTriggers(QAbstractItemView::NoEditTriggers);
         tbl_->horizontalHeader()->setSectionResizeMode(
             2, QHeaderView::Stretch);
-        root->addWidget(tbl_, 2);
+        // Schönere, luftigere Tabelle: halbtransparent (Glitzer schimmert
+        // durch), größere Schrift, mehr Zeilenhöhe, kräftiger Header.
+        tbl_->setShowGrid(false);
+        tbl_->verticalHeader()->setDefaultSectionSize(30);
+        { QFont tf = tbl_->font(); tf.setPointSizeF(tf.pointSizeF() + 0.5);
+          tbl_->setFont(tf); }
+        tbl_->setStyleSheet(
+            "QTableWidget { background:rgba(24,27,34,0.62); border:0;"
+            " gridline-color:transparent; selection-background-color:transparent;"
+            " color:#eef1f6; }"
+            "QTableWidget::item { padding:5px 8px; }"
+            "QHeaderView::section { background:rgba(30,35,45,0.85);"
+            " color:#aeb6c4; border:0; border-bottom:2px solid #3a4150;"
+            " padding:7px 8px; font-weight:700; letter-spacing:0.4px; }"
+            "QHeaderView::section:first { border-top-left-radius:10px; }"
+            "QHeaderView::section:last  { border-top-right-radius:10px; }");
+        // Animierter Fortschrittsbalken in der %-Spalte (wie im Hauptfenster,
+        // plus fließende Schraffur). Ein Timer treibt die Diagonal-Animation.
+        progressDelegate_ = new RipProgressDelegate(this);
+        tbl_->setItemDelegateForColumn(4, progressDelegate_);
+        tbl_->setColumnWidth(4, 150);
+        auto* anim = new QTimer(this);
+        connect(anim, &QTimer::timeout, this, [this] {
+            progressDelegate_->phase += 2;
+            // Nur die %-Spalte neu zeichnen (günstig).
+            if (tbl_->rowCount() > 0)
+                tbl_->viewport()->update();
+        });
+        anim->start(45);
         log_ = new QPlainTextEdit;
         log_->setReadOnly(true);
         log_->setMaximumBlockCount(4000);
-        log_->setMaximumHeight(120);
-        root->addWidget(log_, 1);
+        log_->setMinimumHeight(70);
+        // Ziehbarer, „fancy" Trenner zwischen Disc-Karten (oben) und
+        // Tabelle+Log (unten): am leuchtenden Griff nach oben/unten ziehen,
+        // um dem einen oder anderen Bereich mehr Platz zu geben.
+        auto* lower = new QWidget;
+        auto* lowerV = new QVBoxLayout(lower);
+        lowerV->setContentsMargins(0, 0, 0, 0);
+        lowerV->setSpacing(6);
+        lowerV->addWidget(tbl_, 3);
+        lowerV->addWidget(log_, 1);
+        auto* split = new QSplitter(Qt::Vertical);
+        split->setObjectName("mainSplit");
+        split->addWidget(sc);
+        split->addWidget(lower);
+        split->setStretchFactor(0, 3);
+        split->setStretchFactor(1, 2);
+        split->setChildrenCollapsible(false);
+        split->setHandleWidth(14);
+        // Leuchtender Griff mit Verlauf + Hover-Glow.
+        split->setStyleSheet(QString::fromUtf8(
+            "QSplitter#mainSplit::handle:vertical {"
+            " background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            "   stop:0 rgba(57,135,229,0), stop:0.5 rgba(120,150,235,90),"
+            "   stop:1 rgba(57,135,229,0));"
+            " margin:4px 60px; border-radius:4px; }"
+            "QSplitter#mainSplit::handle:vertical:hover {"
+            " background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            "   stop:0 rgba(57,135,229,0), stop:0.5 rgba(150,180,255,220),"
+            "   stop:1 rgba(57,135,229,0)); }"));
+        root->addWidget(split, 1);
         connect(scanB, &QPushButton::clicked, this,
             [this] { for (auto* p : panels_) p->scan(); });
         connect(startB, &QPushButton::clicked, this,
-            [this] { for (auto* p : panels_) p->start(); });
+            [this] {
+                const bool once = !turbo_->isChecked();
+                log_->appendPlainText(once
+                    ? QString::fromUtf8("[start] Einzeldurchlauf — je eine CD "
+                        "pro Laufwerk.")
+                    : QString::fromUtf8("🔥 [start] Turbo — Dauerlauf, bis "
+                        "Alle stoppen gedrückt wird."));
+                for (auto* p : panels_) p->start(once);
+            });
         connect(stopB, &QPushButton::clicked, this,
             [this] { for (auto* p : panels_) p->stop(); });
+        connect(setB, &QPushButton::clicked, this,
+            [this] { openSettings(); });
         // Initiale Laufwerke + Hotplug: alle 3 s neue erkannte Laufwerke
         // on-the-fly als Spalte addieren (Gruppe bleibt zentriert).
         std::vector<std::string> devs = cdr::list_optical_devices();
@@ -943,25 +1657,54 @@ public:
         });
         hot->start(3000);
     }
+protected:
+    // Hält den animierten Hintergrund auf Größe des content-Widgets und
+    // ganz nach hinten (hinter den Inhalt).
+    bool eventFilter(QObject* o, QEvent* e) override {
+        if (fx_ && e->type() == QEvent::Resize)
+            if (auto* w = qobject_cast<QWidget*>(o)) {
+                fx_->setGeometry(w->rect());
+                fx_->lower();
+            }
+        return QWidget::eventFilter(o, e);
+    }
+#if !defined(Q_OS_WIN) && !defined(Q_OS_MACOS)
+    // Linux: Kanten-Resize fürs randlose Fenster (Windows: WM_NCHITTEST,
+    // macOS: native Titelleiste — beide brauchen das hier nicht).
+    bool event(QEvent* ev) override {
+        if (framelessLinuxResizeEvent(this, ev)) return true;
+        return QWidget::event(ev);
+    }
+#endif
 private:
+    // Log-Zeile mit Laufwerks-Farbpunkt + Tag (Farbe nur als Marker neben
+    // dem Text — Text selbst bleibt in normaler Schriftfarbe lesbar).
+    void appendLog(const DrivePanel* p, const QString& msg) {
+        log_->appendHtml(QString("<span style='color:%1;'>●</span> "
+                                 "<b>[%2]</b> %3")
+            .arg(p->accent().name(), p->tag(), msg.toHtmlEscaped()));
+    }
     void addPanel(const std::string& dev) {
         auto* colsW = cols_->parentWidget();
-        auto* p = new DrivePanel(base_, dev, colsW);
         int idx = (int)panels_.size();
+        auto* p = new DrivePanel(base_, dev, driveAccent(idx), colsW);
         panels_.push_back(p);
         cols_->insertWidget(cols_->count() - 1, p);  // vor rechtem Stretch
         connect(p->controller(), &Controller::trackState, this,
             [this, idx](int t, int st, double f, const QString& m) {
                 onTrack(idx, t, st, f, m); });
         connect(p->controller(), &Controller::logLine, this,
-            [this, p](const QString& l) {
-                log_->appendPlainText("[" + p->tag() + "] " + l); });
+            [this, p](const QString& l) { appendLog(p, l); });
         connect(p->controller(), &Controller::discDone, this,
             [this, p](bool ok, const QString& m) {
-                log_->appendPlainText("[" + p->tag() + "] " +
-                    (ok ? "[OK] " : "[FEHLER] ") + m); });
+                appendLog(p, (ok ? "[OK] " : "[FEHLER] ") + m);
+                // Status-Puls im Hintergrund: grün=Erfolg, rot=Fehler.
+                if (fx_) fx_->pulse(ok ? QColor(0x35, 0xc7, 0x59)
+                                       : QColor(0xff, 0x45, 0x45)); });
         p->onTracks = [this, idx](const QStringList& titles) {
             fillPreviewTracks(idx, titles); };
+        p->onLog = [this, p](const QString& m) { appendLog(p, m); };
+        p->onNewDisc = [this, idx] { resetDriveRows(idx); };
         hdr_->setText(QString::fromUtf8(
             "<b>%1 Laufwerk(e)</b> — pro Laufwerk eine "
             "<i>unterschiedliche</i> Disc einlegen, dann 'Alle starten'.")
@@ -974,12 +1717,49 @@ private:
         int row = tbl_->rowCount();
         tbl_->insertRow(row);
         rows_.insert(key, row);
-        tbl_->setItem(row, 0,
-            new QTableWidgetItem(panels_[drive]->tag()));
+        const QColor acc = panels_[drive]->accent();
+        auto* tagIt = new QTableWidgetItem(panels_[drive]->tag());
+        // Farbquadrat neben dem Tag (DecorationRole malt einen Swatch) —
+        // Text bleibt normal lesbar, Identität hängt nicht an Farbe allein.
+        tagIt->setData(Qt::DecorationRole, acc);
+        // Laufwerks-Index als UserRole am Zeilen-Ankeritem (Spalte 0)
+        // hinterlegen → beim Disc-Wechsel lassen sich die Zeilen genau eines
+        // Laufwerks gezielt entfernen und rows_ sauber neu indizieren.
+        tagIt->setData(Qt::UserRole, drive);
+        tbl_->setItem(row, 0, tagIt);
         tbl_->setItem(row, 1, new QTableWidgetItem(QString::number(t)));
         for (int c = 2; c < 5; ++c)
             tbl_->setItem(row, c, new QTableWidgetItem(""));
+        // Titel-Platzhalter, falls (noch) keine Metadaten da sind — nie leer,
+        // nie mit Statusmeldung verunreinigt. Der echte Titel überschreibt.
+        tbl_->item(row, 2)->setText(QString("Track %1").arg(t));
+        tbl_->item(row, 2)->setForeground(QColor(0x8a, 0x90, 0x9a));
+        // Dezenter Zeilen-Tint in der Laufwerksfarbe (~8 % Alpha) — genug
+        // zum Zuordnen, ohne die dunkle Tabelle bunt zu machen.
+        QColor tint = acc; tint.setAlpha(20);
+        for (int c = 0; c < 5; ++c)
+            tbl_->item(row, c)->setBackground(tint);
         return row;
+    }
+    // Beim Disc-Wechsel eines Laufwerks (Dauerlauf): dessen Zeilen entfernen
+    // und rows_ komplett neu aus der verbliebenen Tabelle aufbauen — so
+    // bleiben die Zeilen der anderen (weiter rippenden) Laufwerke korrekt
+    // indiziert.
+    void resetDriveRows(int drive) {
+        std::vector<int> del;
+        for (int r = 0; r < tbl_->rowCount(); ++r) {
+            auto* it0 = tbl_->item(r, 0);
+            if (it0 && it0->data(Qt::UserRole).toInt() == drive)
+                del.push_back(r);
+        }
+        for (auto it = del.rbegin(); it != del.rend(); ++it)
+            tbl_->removeRow(*it);
+        rows_.clear();
+        for (int r = 0; r < tbl_->rowCount(); ++r) {
+            int d = tbl_->item(r, 0)->data(Qt::UserRole).toInt();
+            int t = tbl_->item(r, 1)->text().toInt();
+            rows_.insert(QString::number(d) + "-" + QString::number(t), r);
+        }
     }
     // Trackliste aus der Preview sofort einfüllen (vor dem Rip): Titel +
     // Status „erkannt". Der Rip aktualisiert später dieselben Zeilen
@@ -987,7 +1767,10 @@ private:
     void fillPreviewTracks(int drive, const QStringList& titles) {
         for (int i = 0; i < titles.size(); ++i) {
             int row = ensureRow(drive, i + 1);
-            tbl_->item(row, 2)->setText(titles[i]);
+            const QString t = titles[i].trimmed();
+            if (t.isEmpty()) continue;             // Platzhalter „Track N" lassen
+            tbl_->item(row, 2)->setText(t);
+            tbl_->item(row, 2)->setForeground(QColor(0xe8, 0xea, 0xed));  // echt
             if (tbl_->item(row, 3)->text().isEmpty())
                 tbl_->item(row, 3)->setText("erkannt");
         }
@@ -996,13 +1779,58 @@ private:
         int row = ensureRow(drive, t);
         tbl_->item(row, 3)->setText(QString::fromUtf8(
             cdr::state_label((cdr::TrackState)st)));
-        tbl_->item(row, 4)->setText(QString::number((int)(f * 100)) + "%");
-        if (!m.isEmpty() && tbl_->item(row, 2)->text().isEmpty())
-            tbl_->item(row, 2)->setText(m);
+        // %-Spalte: Fortschritt + „aktiv"-Flag an den Progress-Delegate.
+        // aktiv = Ripping/Ripped/Encoding/Uploading (1..4).
+        const bool active = (st >= 1 && st <= 4);
+        auto* pcell = tbl_->item(row, 4);
+        pcell->setData(Qt::UserRole, f);
+        pcell->setData(Qt::UserRole + 1, active);
+        // Sparkle-Zeilenhighlight: die aktiv bearbeitete Zeile hebt sich
+        // heller ab, fertige/wartende fallen auf den Laufwerks-Tint zurück.
+        const QColor acc = panels_[drive]->accent();
+        QColor rowbg = acc;
+        rowbg.setAlpha(active ? 70 : 20);
+        for (int c = 0; c < 5; ++c)
+            if (auto* it = tbl_->item(row, c)) it->setBackground(rowbg);
+        // Zusatz-Meldung (z. B. AccurateRip-Ergebnis) gehört NICHT in die
+        // Titel-Spalte — die zeigt nur Track-Titel. Info steht im Log; hier
+        // als Tooltip auf der Statuszelle, damit die Tabelle sauber bleibt.
+        if (!m.isEmpty()) tbl_->item(row, 3)->setToolTip(m);
+    }
+    // Settings-Dialog aus dem Multi-Fenster: gemeinsame Einstellungen für
+    // alle Laufwerke ändern (Format, WebDAV, Preflight, Kalibrieren). Der
+    // pro-Laufwerk-Gerätepfad bleibt unberührt. Speichert ins aktive Profil.
+    void openSettings() {
+        if (anyRipActive()) {
+            QMessageBox::information(this, "Einstellungen",
+                "Während irgendwo ein Lauf aktiv ist nicht änderbar — erst "
+                "alle Laufwerke stoppen (auch im Einzel-Fenster).");
+            return;
+        }
+        std::string prof = cdr::active_profile();
+        std::string path = cdr::profile_path(prof);
+        SettingsDialog dlg(base_, QString::fromStdString(path), this);
+        if (dlg.exec() != QDialog::Accepted) return;
+        base_ = dlg.config();
+        for (auto* p : panels_) p->applyBaseConfig(base_);
+        std::string sprof = dlg.selectedProfile().toStdString();
+        std::string spath = cdr::profile_path(sprof);
+        if (cdr::save_config(base_, spath)) {
+            cdr::set_active_profile(sprof);
+            log_->appendPlainText(QString::fromUtf8(
+                "⚙ Einstellungen gespeichert — greifen ab dem nächsten "
+                "Rip-Start."));
+        } else {
+            log_->appendPlainText("⚠ Einstellungen konnten nicht gespeichert "
+                                  "werden.");
+        }
     }
     cdr::Config              base_;
     QHBoxLayout*             cols_ = nullptr;
     QLabel*                  hdr_  = nullptr;
+    QCheckBox*               turbo_ = nullptr;      // Dauerlauf-Schalter
+    BackgroundFx*            fx_ = nullptr;         // animierter Hintergrund
+    RipProgressDelegate*     progressDelegate_ = nullptr;
     std::vector<DrivePanel*> panels_;
     QMap<QString, int>       rows_;
     QTableWidget*            tbl_;
@@ -1045,6 +1873,198 @@ void MainWindow::showEvent(QShowEvent* e) {
 }
 #endif
 
+#if !defined(Q_OS_WIN) && !defined(Q_OS_MACOS)
+// Linux-Gegenstück zu nativeEvent(): Kanten-Resize fürs randlose Hauptfenster.
+bool MainWindow::event(QEvent* ev) {
+    if (framelessLinuxResizeEvent(this, ev)) return true;
+    return QMainWindow::event(ev);
+}
+#endif
+
+// ─────────────────────── Metadaten-Such-Popup ─────────────────────────────
+// Freitext-/Keyword-Suche in MusicBrainz, um bei falsch erkannten Discs das
+// richtige Album selbst zu finden (z. B. „Phil Fuldner" statt „Bryan Adams").
+// Treffer wählen → volle Metadaten (Album-Artist/-Titel/Jahr + Track-Titel)
+// werden übernommen. Kein Q_OBJECT nötig (nur Functor-Connects).
+class MetaSearchDialog : public QDialog {
+public:
+    MetaSearchDialog(const cdr::Config& cfg, const QString& seedArtist,
+                     const QString& seedTitle, int discTracks = 0,
+                     QWidget* parent = nullptr)
+        : QDialog(parent), cfg_(cfg), discTracks_(discTracks) {
+        setWindowTitle(QString::fromUtf8("Metadaten suchen — MusicBrainz"));
+        resize(640, 520);
+        auto* v = new QVBoxLayout(this);
+        v->addWidget(new QLabel(QString::fromUtf8(
+            "Künstler, Album oder Titel als Stichworte eingeben — die "
+            "passende Veröffentlichung wählen und übernehmen:")));
+        auto* h = new QHBoxLayout;
+        search_ = new QLineEdit;
+        search_->setPlaceholderText(
+            QString::fromUtf8("z. B. Phil Fuldner Everything I Do …"));
+        QString seed = (seedArtist + " " + seedTitle).trimmed();
+        search_->setText(seed);
+        // Quelle: MusicBrainz (Standard) oder Discogs (bessere Abdeckung bei
+        // Promos/Maxis/Singles; braucht Token in den Einstellungen).
+        source_ = new QComboBox;
+        source_->addItem("MusicBrainz");
+        source_->addItem("Discogs");
+        source_->addItem(QString::fromUtf8("MusicBrainz + Discogs"));
+        source_->setToolTip(QString::fromUtf8(
+            "MusicBrainz + Discogs: MB als Basis (Cover/Titel), fehlende "
+            "Metadaten (Genres, Label, Barcode …) aus dem verlinkten "
+            "Discogs-Release ergänzt."));
+        auto* go = new QPushButton(QString::fromUtf8("🔍 Suchen"));
+        go->setProperty("primary", true);
+        h->addWidget(source_); h->addWidget(search_, 1); h->addWidget(go);
+        v->addLayout(h);
+        connect(source_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, [this](int){
+                    // Track-Filter gilt nur für MB-basierte Quellen (0 und 2);
+                    // Discogs hat in der Suche keine Titelzahl → Häkchen weg.
+                    if (onlyMatch_)
+                        onlyMatch_->setVisible(source_->currentIndex() != 1);
+                    if (!search_->text().trimmed().isEmpty()) doSearch();
+                });
+        // Track-Zahl-Filter: die eingelegte Disc hat discTracks_ Titel. Bei
+        // kurzen Maxis/Singles verschwindet die passende Veröffentlichung sonst
+        // hinter den populären Alben — dieses Häkchen filtert MB hart auf die
+        // Disc-Länge. Ohne Häkchen werden passende Längen nur nach oben sortiert.
+        if (discTracks_ > 0) {
+            onlyMatch_ = new QCheckBox(QString::fromUtf8(
+                "Nur Veröffentlichungen mit %1 Titeln (passend zur Disc)")
+                .arg(discTracks_));
+            connect(onlyMatch_, &QCheckBox::toggled, this,
+                    [this]{ doSearch(); });
+            v->addWidget(onlyMatch_);
+        }
+        list_ = new QListWidget;
+        v->addWidget(list_, 1);
+        hint_ = new QLabel;
+        hint_->setStyleSheet("color:#9aa0aa;");
+        v->addWidget(hint_);
+        auto* bb = new QDialogButtonBox(QDialogButtonBox::Ok |
+                                        QDialogButtonBox::Cancel);
+        bb->button(QDialogButtonBox::Ok)->setText(
+            QString::fromUtf8("Übernehmen"));
+        v->addWidget(bb);
+        connect(go, &QPushButton::clicked, this, [this]{ doSearch(); });
+        connect(search_, &QLineEdit::returnPressed, this, [this]{ doSearch(); });
+        connect(list_, &QListWidget::itemDoubleClicked, this,
+                [this](QListWidgetItem*){ accept(); });
+        connect(bb, &QDialogButtonBox::accepted, this, [this]{ accept(); });
+        connect(bb, &QDialogButtonBox::rejected, this, &QDialog::reject);
+        if (!seed.isEmpty()) doSearch();
+    }
+    std::optional<cdr::Album> chosen() const { return chosen_; }
+private:
+    void doSearch() {
+        const QString q = search_->text().trimmed();
+        if (q.isEmpty()) return;
+        const int idx = source_->currentIndex();
+        onDiscogs_ = (idx == 1);
+        combined_  = (idx == 2);
+        if ((onDiscogs_ || combined_) && cfg_.discogs_token.empty()) {
+            list_->clear();
+            hint_->setText(QString::fromUtf8(
+                "Discogs-Token fehlt — in Einstellungen → Discogs-Token "
+                "hinterlegen (discogs.com/settings/developers)."));
+            if (onDiscogs_) return;      // reines Discogs geht ohne Token nicht
+            // Kombiniert läuft ohne Token als reines MB weiter.
+        }
+        list_->clear();
+        hint_->setText(QString::fromUtf8("Suche läuft …"));
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        std::vector<cdr::ReleaseHit> hits;
+        if (onDiscogs_) {
+            try { hits = cdr::discogs_search(q.toStdString(),
+                      cfg_.discogs_token, cfg_.mb_useragent); } catch (...) {}
+        } else {
+            // Freie Stichwort-Query, nach Disc-Track-Zahl sortiert; mit Häkchen
+            // hart auf diese Länge gefiltert (findet kurze Maxis/Singles).
+            const bool strict = onlyMatch_ && onlyMatch_->isChecked();
+            try { hits = cdr::mb_search_free(q.toStdString(), discTracks_,
+                      strict, cfg_.mb_useragent); } catch (...) {}
+        }
+        QApplication::restoreOverrideCursor();
+        for (const auto& hh : hits) {
+            QString label = QString::fromStdString(hh.artist) +
+                QString::fromUtf8("  —  ") + QString::fromStdString(hh.title);
+            if (!hh.date.empty())
+                label += " (" + QString::fromStdString(hh.date) + ")";
+            if (!hh.country.empty())
+                label += " [" + QString::fromStdString(hh.country) + "]";
+            // Discogs liefert keine Track-Zahl, dafür Format + Label/Katalognr./
+            // Barcode → damit lässt sich die exakte Pressung eindeutig zuordnen.
+            if (!hh.format.empty())
+                label += QString::fromUtf8("  ·  ") + QString::fromStdString(hh.format);
+            else if (hh.tracks > 0)
+                label += QString::fromUtf8("  ·  %1 Tracks").arg(hh.tracks);
+            QString cn;
+            if (!hh.label.empty())  cn += QString::fromStdString(hh.label);
+            if (!hh.catno.empty())  cn += (cn.isEmpty() ? "" : " ") +
+                                          QString::fromStdString(hh.catno);
+            if (!cn.isEmpty())
+                label += QString::fromUtf8("  ·  ") + cn;
+            if (!hh.barcode.empty())
+                label += QString::fromUtf8("  ·  ⬛ ") +
+                         QString::fromStdString(hh.barcode);
+            auto* it = new QListWidgetItem(label);
+            // Ganzer Datensatz als Tooltip (mehrzeilig, gut lesbar).
+            {
+                QString tip = QString::fromStdString(hh.artist) + " — " +
+                              QString::fromStdString(hh.title);
+                if (!hh.date.empty())    tip += "\nJahr: " + QString::fromStdString(hh.date);
+                if (!hh.country.empty()) tip += "\nLand: " + QString::fromStdString(hh.country);
+                if (!hh.format.empty())  tip += "\nFormat: " + QString::fromStdString(hh.format);
+                if (!hh.label.empty())   tip += "\nLabel: " + QString::fromStdString(hh.label);
+                if (!hh.catno.empty())   tip += "\nKatalognr.: " + QString::fromStdString(hh.catno);
+                if (!hh.barcode.empty()) tip += "\nBarcode: " + QString::fromStdString(hh.barcode);
+                if (hh.tracks > 0)       tip += "\nTitel: " + QString::number(hh.tracks);
+                it->setToolTip(tip);
+            }
+            it->setData(Qt::UserRole, QString::fromStdString(hh.mbid));
+            list_->addItem(it);
+        }
+        hint_->setText(hits.empty()
+            ? QString::fromUtf8("Keine Treffer — Stichworte anpassen oder Quelle wechseln.")
+            : QString::fromUtf8("%1 Treffer — den richtigen wählen.")
+                  .arg((int)hits.size()));
+    }
+    void accept() override {
+        auto* it = list_->currentItem();
+        if (it) {
+            const QString id = it->data(Qt::UserRole).toString();
+            if (!id.isEmpty()) {
+                QApplication::setOverrideCursor(Qt::WaitCursor);
+                try {
+                    if (onDiscogs_)
+                        chosen_ = cdr::discogs_release_by_id(id.toStdString(),
+                                      cfg_.discogs_token, cfg_.mb_useragent);
+                    else if (combined_)   // MB-Anker + Discogs-Lücken
+                        chosen_ = cdr::mb_release_enriched(id.toStdString(), 0,
+                                      cfg_.discogs_token, cfg_.mb_useragent);
+                    else
+                        chosen_ = cdr::mb_release_by_id(id.toStdString(), 0,
+                                      cfg_.mb_useragent);
+                } catch (...) {}
+                QApplication::restoreOverrideCursor();
+            }
+        }
+        QDialog::accept();
+    }
+    cdr::Config cfg_;
+    int         discTracks_ = 0;          // Track-Zahl der eingelegten Disc
+    QComboBox* source_ = nullptr;         // MusicBrainz | Discogs | kombiniert
+    bool       onDiscogs_ = false;        // reine Discogs-Trefferliste aktiv
+    bool       combined_  = false;        // MB-Suche, beim Übernehmen anreichern
+    QLineEdit* search_;
+    QCheckBox* onlyMatch_ = nullptr;      // hart auf Disc-Länge filtern (nur MB)
+    QListWidget* list_;
+    QLabel* hint_;
+    std::optional<cdr::Album> chosen_;
+};
+
 // ───────────────────────────── MainWindow ─────────────────────────────────────
 
 MainWindow::MainWindow(cdr::Config cfg, bool once,
@@ -1054,6 +2074,9 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
     setWindowTitle("CD-Ripper → Navidrome");
 #ifndef Q_OS_MACOS
     setWindowFlag(Qt::FramelessWindowHint);   // randlos → eigene Titelleiste (s.u.)
+#endif
+#if !defined(Q_OS_WIN) && !defined(Q_OS_MACOS)
+    setAttribute(Qt::WA_Hover, true);         // Kanten-Resize (s. event())
 #endif
     setMinimumSize(820, 460);          // darf klein werden — Inhalt scrollt
     // Fenstergröße über Programmstarts hinweg merken — neben der config.ini
@@ -1131,6 +2154,12 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
 #endif
 
     auto* central = new QWidget;
+    // Animierter Glitzer-/Glow-Hintergrund (wie im Multi-Fenster). central
+    // malt keinen eigenen Hintergrund → der fx-Layer dahinter scheint durch,
+    // die Widgets darüber behalten ihre opaken Hintergründe.
+    central->setAttribute(Qt::WA_NoSystemBackground, true);
+    mainFx_ = new BackgroundFx(central);
+    central->installEventFilter(this);          // Resize → fx nachziehen
     auto* root    = new QVBoxLayout(central);
     root->setContentsMargins(12, 8, 12, 10);
     root->setSpacing(8);
@@ -1185,6 +2214,24 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
     cover_->setCursor(Qt::PointingHandCursor);
     cover_->setToolTip("Tipp: draufklicken 😉");
     cover_->installEventFilter(this);            // Cover-Easter-Egg
+    // Atmender Glow in Cover-Farbe (wie im Multi-Fenster).
+    coverGlow_ = new QGraphicsDropShadowEffect(this);
+    coverGlow_->setBlurRadius(28);
+    coverGlow_->setColor(coverAccent_);
+    coverGlow_->setOffset(0, 0);
+    cover_->setGraphicsEffect(coverGlow_);
+    {
+        auto* gt = new QTimer(this);
+        gt->setInterval(55);
+        connect(gt, &QTimer::timeout, this, [this]{
+            mainAnimPhase_ = (mainAnimPhase_ + 1) % 360;
+            if (coverGlow_) {
+                double s = 0.5 + 0.5 * std::sin(mainAnimPhase_ * 3.14159265 / 180.0);
+                coverGlow_->setBlurRadius(22 + 14 * s);   // atmet 22..36
+            }
+        });
+        gt->start();
+    }
     coverBtn_ = new QPushButton("Cover: Datei…");
     coverMbBtn_ = new QPushButton("Cover: MusicBrainz…");
     auto* covBox = new QVBoxLayout;
@@ -1211,6 +2258,77 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
     form->addWidget(albTitle_,                    1, 1);
     form->addWidget(new QLabel("Jahr:"),          2, 0);
     form->addWidget(albYear_,                     2, 1, Qt::AlignLeft);
+    // Metadaten-Suche: falsch erkanntes Album per Stichwortsuche in
+    // MusicBrainz korrigieren (Album-Artist/-Titel/Jahr + Track-Titel).
+    auto* metaBtn = new QPushButton(QString::fromUtf8("🔍 Metadaten suchen…"));
+    metaBtn->setToolTip(QString::fromUtf8(
+        "Falscher Künstler/Album erkannt? Per Stichwortsuche das richtige "
+        "in MusicBrainz finden und übernehmen."));
+    form->addWidget(metaBtn, 3, 1, Qt::AlignLeft);
+    connect(metaBtn, &QPushButton::clicked, this, [this] {
+        MetaSearchDialog dlg(cfg_, albArtist_->text(), albTitle_->text(),
+                             table_->rowCount(), this);
+        if (dlg.exec() != QDialog::Accepted) return;
+        auto alb = dlg.chosen();
+        if (!alb) return;
+        const QString aa = QString::fromStdString(alb->artist);
+        albArtist_->setText(aa);
+        albTitle_->setText(QString::fromStdString(alb->title));
+        albYear_->setText(QString::fromStdString(alb->year()));
+        ctl_->editAlbum(albArtist_->text(), albTitle_->text(),
+                        albYear_->text());
+        // 1) Künstler-Spalte ALLER Disc-Zeilen auf den Album-Artist setzen —
+        //    sonst bleibt bei Track-Zahl-Mismatch der alte (falsche) Interpret
+        //    stehen (Bug: „Black Veil Brides" blieb in Spalte 2).
+        for (int r = 0; r < table_->rowCount(); ++r) {
+            ctl_->editTrackArtist(r + 1, aa);
+            if (table_->item(r, 2)) table_->item(r, 2)->setText(aa);
+        }
+        // 2) Titel + ggf. Per-Track-Artist aus dem gewählten Release übernehmen
+        //    (nur so viele Zeilen, wie beide haben).
+        const int nRows = table_->rowCount();
+        const int nRel  = (int)alb->tracks.size();
+        for (int i = 0; i < nRel && i < nRows; ++i) {
+            QString t  = QString::fromStdString(alb->tracks[i].title);
+            QString ta = QString::fromStdString(alb->tracks[i].artist);
+            if (ta.isEmpty()) ta = aa;
+            ctl_->editTrackTitle(i + 1, t);
+            ctl_->editTrackArtist(i + 1, ta);
+            if (table_->item(i, 1)) table_->item(i, 1)->setText(t);
+            if (table_->item(i, 2)) table_->item(i, 2)->setText(ta);
+        }
+        // 3) Cover aktualisieren (best effort): MB/kombiniert über Cover Art
+        //    Archive, Discogs über die Bild-URL.
+        QString coverTmp = QDir::tempPath() + "/cdripper-meta-cover.jpg";
+        bool gotCover = false;
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        if (!alb->mb_release_id.empty()) {
+            curReleaseId_ = QString::fromStdString(alb->mb_release_id);
+            auto urls = cdr::caa_image_urls(alb->mb_release_id, cfg_.mb_useragent);
+            if (!urls.empty())
+                gotCover = cdr::fetch_url(urls[0], cfg_.mb_useragent,
+                                          coverTmp.toStdString());
+        }
+        if (!gotCover && !alb->cover_url.empty())
+            gotCover = cdr::fetch_url(alb->cover_url, cfg_.mb_useragent,
+                                      coverTmp.toStdString());
+        QApplication::restoreOverrideCursor();
+        // Als „sticky" Override merken, damit die Korrektur den Rip-Start
+        // überlebt (onAlbumReady wendet sie für dieselbe Disc erneut an).
+        manualAlbum_     = *alb;
+        manualDiscId_    = lastDiscId_;
+        manualCoverPath_ = gotCover ? coverTmp : QString();
+        if (gotCover) { ctl_->setCover(coverTmp); onCoverReady(coverTmp); }
+        // 4) Track-Zahl-Mismatch offen ansagen (häufig bei Maxi/Promo vs. Disc).
+        QString note = QString::fromUtf8(
+            "Metadaten übernommen — greifen ab dem Rip.");
+        if (nRel != nRows)
+            note = QString::fromUtf8(
+                "Übernommen, ABER die gewählte Veröffentlichung hat %1 Titel, "
+                "die Disc %2 — bitte Titel/Künstler der übrigen Zeilen prüfen "
+                "(evtl. eine passendere Version wählen).").arg(nRel).arg(nRows);
+        bannerLbl_->setText(note);
+    });
     auto* formW = new QWidget;
     formW->setLayout(form);
     head->addWidget(formW, 1);
@@ -1321,6 +2439,7 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
     if (QSystemTrayIcon::isSystemTrayAvailable()) {
         tray_ = new QSystemTrayIcon(
             style()->standardIcon(QStyle::SP_DriveCDIcon), this);
+        g_notify_tray = tray_;            // notify() nutzt es plattformübergreifend
         tray_->setToolTip("CD Ripper — bereit");
         auto* tm = new QMenu(this);
         tm->addAction("Fenster zeigen", this, [this] {
@@ -1362,6 +2481,22 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
     table_->setColumnWidth(0, 48);
     table_->setColumnWidth(3, 340);   // Status voll lesbar (AR-Hinweis etc.)
     table_->setColumnWidth(4, 190);
+    // Fancy Fortschrittsbalken (wie im Multi-Fenster): custom-gemalt mit
+    // Gradient, Glanzlicht, pulsierendem End-Glow, Konturschrift + Funkeln.
+    // Ein Timer treibt die Diagonal-Animation. Werte liegen als Item-Daten
+    // (UserRole = Fortschritt 0..1, UserRole+1 = aktiv) statt in einem
+    // QProgressBar-Cell-Widget.
+    progressDelegate_ = new RipProgressDelegate(this);
+    table_->setItemDelegateForColumn(4, progressDelegate_);
+    {
+        auto* anim = new QTimer(this);
+        connect(anim, &QTimer::timeout, this, [this] {
+            progressDelegate_->phase += 2;
+            if (table_->rowCount() > 0)
+                table_->viewport()->update();   // nur %-Spalte neu zeichnen
+        });
+        anim->start(45);
+    }
     table_->setWordWrap(false);
     table_->setTextElideMode(Qt::ElideRight);
     table_->verticalHeader()->setVisible(false);
@@ -1370,6 +2505,21 @@ MainWindow::MainWindow(cdr::Config cfg, bool once,
     table_->setAlternatingRowColors(true);
     table_->setFrameShape(QFrame::NoFrame);
     table_->setMinimumHeight(110);   // ~3 Zeilen Minimum, skaliert mit Fenster
+    // Halbtransparente, „edle" Tabelle (der animierte Hintergrund scheint durch),
+    // größere Schrift, kräftiger Header — wie im Multi-Fenster.
+    table_->verticalHeader()->setDefaultSectionSize(30);
+    { QFont tf = table_->font(); tf.setPointSizeF(tf.pointSizeF() + 0.5);
+      table_->setFont(tf); }
+    table_->setStyleSheet(
+        "QTableWidget { background:rgba(24,27,34,0.62); border:0;"
+        " gridline-color:transparent; selection-background-color:transparent;"
+        " color:#eef1f6; }"
+        "QTableWidget::item { padding:5px 8px; }"
+        "QHeaderView::section { background:rgba(30,35,45,0.85);"
+        " color:#aeb6c4; border:0; border-bottom:2px solid #3a4150;"
+        " padding:7px 8px; font-weight:700; letter-spacing:0.4px; }"
+        "QHeaderView::section:first { border-top-left-radius:10px; }"
+        "QHeaderView::section:last  { border-top-right-radius:10px; }");
     {
         auto* tCard = new QGroupBox("TITEL");
         auto* tl = new QVBoxLayout(tCard);
@@ -1480,6 +2630,10 @@ void MainWindow::onStart() {
     lastElapsed_ = 0; lastEta_ = -1; busy_ = true;
     bannerLbl_->setText("Läuft …");
     setControlsRunning(true);
+    // Bei aktiver manueller Metadaten-Wahl für diese Disc den MB-Release-Dialog
+    // unterdrücken (sonst fragt die Pipeline trotz Korrektur nach).
+    ctl_->setSuppressChooser(manualAlbum_.has_value() &&
+                             manualDiscId_ == lastDiscId_);
     ctl_->start(cfg_, onceBox_->isChecked());
 }
 
@@ -1550,9 +2704,37 @@ void MainWindow::onWaiting(const QString& m) {
     if (busy_) notify("Nächste CD einlegen", m);
 }
 
-void MainWindow::onAlbumReady(const QString& aa, const QString& at,
-                              const QString& yr, const QStringList& ti,
-                              const QStringList& ar) {
+void MainWindow::onAlbumReady(const QString& aa0, const QString& at0,
+                              const QString& yr0, const QStringList& ti0,
+                              const QStringList& ar0) {
+    QString aa = aa0, at = at0, yr = yr0;
+    QStringList ti = ti0, ar = ar0;
+    // Manuelle Metadaten-Wahl hat Vorrang und überlebt den Rip-Start: die
+    // frische Auto-Erkennung würde die Korrektur sonst überschreiben. Gilt nur
+    // für dieselbe Disc; bei anderer Disc verwerfen.
+    bool manual = manualAlbum_.has_value() && manualDiscId_ == lastDiscId_;
+    if (!manual && manualAlbum_.has_value() && manualDiscId_ != lastDiscId_) {
+        manualAlbum_.reset(); manualDiscId_.clear(); manualCoverPath_.clear();
+    }
+    if (manual) {
+        const cdr::Album& m = *manualAlbum_;
+        aa = QString::fromStdString(m.artist);
+        at = QString::fromStdString(m.title);
+        yr = QString::fromStdString(m.year());
+        const int nRows = ti.size();          // Disc-Track-Zahl beibehalten
+        QStringList mti, mar;
+        for (int i = 0; i < nRows; ++i) {
+            if (i < (int)m.tracks.size()) {
+                mti << QString::fromStdString(m.tracks[i].title);
+                QString a = QString::fromStdString(m.tracks[i].artist);
+                mar << (a.isEmpty() ? aa : a);
+            } else {                          // Disc hat mehr Tracks als Release
+                mti << ti.value(i);           // Auto-Titel behalten
+                mar << aa;                    // Künstler = Album-Artist
+            }
+        }
+        ti = mti; ar = mar;
+    }
     fillingTable_ = true;
     albArtist_->setText(aa);
     albTitle_->setText(at);
@@ -1569,22 +2751,55 @@ void MainWindow::onAlbumReady(const QString& aa, const QString& at,
         st->setFlags(st->flags() & ~Qt::ItemIsEditable);
         st->setForeground(state_color((int)cdr::TrackState::Pending));
         table_->setItem(i, 3, st);
-        auto* pb = new QProgressBar;
-        pb->setRange(0, 100);
-        pb->setValue(0);
-        pb->setTextVisible(true);
-        table_->setCellWidget(i, 4, pb);
+        // %-Spalte: Daten-Item für den RipProgressDelegate (kein Cell-Widget).
+        auto* pcell = new QTableWidgetItem;
+        pcell->setFlags(pcell->flags() & ~Qt::ItemIsEditable);
+        pcell->setData(Qt::UserRole, 0.0);        // Fortschritt 0..1
+        pcell->setData(Qt::UserRole + 1, false);  // aktiv?
+        table_->setItem(i, 4, pcell);
     }
     fillingTable_ = false;
-    bannerLbl_->setText(QString("%1 — %2 (%3), %4 Tracks")
-        .arg(aa, at, yr.isEmpty() ? "—" : yr).arg(ti.size()));
+    if (manual) {
+        // An die (ggf. laufende) Pipeline pushen + Cover erneut setzen, damit
+        // die Auto-Erkennung nichts zurücksetzt.
+        ctl_->editAlbum(aa, at, yr);
+        for (int i = 0; i < ti.size(); ++i) {
+            ctl_->editTrackTitle(i + 1, ti[i]);
+            ctl_->editTrackArtist(i + 1, ar[i]);
+        }
+        if (!manualCoverPath_.isEmpty()) {
+            QPixmap p(manualCoverPath_);
+            if (!p.isNull()) {
+                QPixmap sc = p.scaled(cover_->size(), Qt::KeepAspectRatio,
+                                      Qt::SmoothTransformation);
+                cover_->setPixmap(sc);
+                coverAccent_ = coverAccentColor(sc, coverAccent_);
+                if (coverGlow_) coverGlow_->setColor(coverAccent_);
+            }
+            ctl_->setCover(manualCoverPath_);
+        }
+        bannerLbl_->setText(QString::fromUtf8(
+            "Manuelle Metadaten aktiv — überschreiben die Auto-Erkennung."));
+    } else {
+        bannerLbl_->setText(QString("%1 — %2 (%3), %4 Tracks")
+            .arg(aa, at, yr.isEmpty() ? "—" : yr).arg(ti.size()));
+    }
 }
 
 void MainWindow::onCoverReady(const QString& path) {
+    // Manuell gewähltes Cover hat Vorrang — Auto-Erkennungs-Cover ignorieren.
+    if (manualAlbum_.has_value() && manualDiscId_ == lastDiscId_ &&
+        !manualCoverPath_.isEmpty() && path != manualCoverPath_)
+        return;
     QPixmap p(path);
-    if (!p.isNull())
-        cover_->setPixmap(p.scaled(cover_->size(), Qt::KeepAspectRatio,
-                                   Qt::SmoothTransformation));
+    if (!p.isNull()) {
+        QPixmap scaled = p.scaled(cover_->size(), Qt::KeepAspectRatio,
+                                  Qt::SmoothTransformation);
+        cover_->setPixmap(scaled);
+        // Glow-Farbe aus dem Cover ziehen.
+        coverAccent_ = coverAccentColor(scaled, coverAccent_);
+        if (coverGlow_) coverGlow_->setColor(coverAccent_);
+    }
 }
 
 void MainWindow::onPickCover() {
@@ -1671,15 +2886,21 @@ void MainWindow::onTrackState(int idx, int state, double frac,
         it->setToolTip(msg);
         it->setForeground(state_color(state));
     }
-    if (auto* pb = qobject_cast<QProgressBar*>(table_->cellWidget(row, 4))) {
+    if (auto* pcell = table_->item(row, 4)) {
         cdr::TrackState s = (cdr::TrackState)state;
-        if (s == cdr::TrackState::Done)        pb->setValue(100);
-        else if (s == cdr::TrackState::Failed) { pb->setValue(0); }
-        else if (s == cdr::TrackState::Ripping ||
-                 s == cdr::TrackState::Uploading)
-            pb->setValue((int)(frac * 100));
-        else if (s == cdr::TrackState::Ripped)   pb->setValue(100);
-        else if (s == cdr::TrackState::Encoding) pb->setValue(100);
+        double f = frac;
+        if (s == cdr::TrackState::Done || s == cdr::TrackState::Ripped ||
+            s == cdr::TrackState::Encoding) f = 1.0;
+        else if (s == cdr::TrackState::Failed) f = 0.0;
+        const bool active = (state >= 1 && state <= 4);  // Ripping..Uploading
+        pcell->setData(Qt::UserRole, f);
+        pcell->setData(Qt::UserRole + 1, active);
+        // Aktiv bearbeitete Zeile hebt sich in Cover-Farbe ab (wie im
+        // Multi-Fenster); fertige/wartende fallen auf transparent zurück.
+        QColor rowbg = coverAccent_;
+        rowbg.setAlpha(active ? 64 : 0);
+        for (int c = 0; c < 5; ++c)
+            if (auto* it = table_->item(row, c)) it->setBackground(rowbg);
     }
 }
 
@@ -1740,6 +2961,10 @@ void MainWindow::logChain(const QString& line) {
 void MainWindow::onDiscDone(bool ok, const QString& m) {
     bannerLbl_->setText((ok ? "✓ " : "✗ ") + m);
     appendLog((ok ? "[OK] " : "[FEHLER] ") + m);
+    // Status-Puls im Hintergrund: grün bei Erfolg, rot bei Fehler.
+    if (mainFx_)
+        static_cast<BackgroundFx*>(mainFx_)->pulse(
+            ok ? QColor(0x35, 0xc7, 0x59) : QColor(0xff, 0x45, 0x45));
     notify(ok ? "CD fertig ✓" : "CD mit Fehlern ✗", m);
     QString now = QDateTime::currentDateTime().toString("HH:mm:ss");
     QString arInfo;
@@ -1754,6 +2979,8 @@ void MainWindow::onDiscDone(bool ok, const QString& m) {
 }
 
 void MainWindow::onFatal(const QString& m) {
+    if (mainFx_)
+        static_cast<BackgroundFx*>(mainFx_)->pulse(QColor(0xff, 0x45, 0x45));
     QMessageBox::critical(this, "Fataler Fehler", m);
 }
 
@@ -1964,12 +3191,24 @@ void MainWindow::resetDiscState() {
     scanDiscId_.clear();
     scanTrackStatus_.clear();
     curReleaseId_.clear();
+    manualAlbum_.reset();             // manuelle Metadaten gelten nur je Disc
+    manualDiscId_.clear();
+    manualCoverPath_.clear();
     lastDiscId_.clear();              // nächste Disc löst frische Vorschau aus
     bannerLbl_->setText("Tray leer — neue CD einlegen.");
 }
 
 // Cover-Easter-Egg: Klick aufs Cover-Bild → CD-Morph-Spin.
 bool MainWindow::eventFilter(QObject* obj, QEvent* ev) {
+    // Animierten Hintergrund auf die Größe des central-Widgets nachziehen.
+    if (mainFx_ && obj == mainFx_->parentWidget() &&
+        ev->type() == QEvent::Resize) {
+        if (auto* w = qobject_cast<QWidget*>(obj)) {
+            mainFx_->setGeometry(w->rect());
+            mainFx_->lower();
+        }
+        return false;                             // nicht konsumieren
+    }
     if (obj == cover_ && ev->type() == QEvent::MouseButtonPress &&
         !coverSpin_) {
         QPixmap pm = cover_->pixmap();
@@ -1987,9 +3226,20 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* ev) {
 }
 
 void MainWindow::onOpenSettings() {
-    if (ctl_->running()) {
+    if (anyRipActive()) {
         QMessageBox::information(this, "Einstellungen",
-            "Während ein Lauf aktiv ist nicht änderbar — erst stoppen.");
+            "Während irgendwo ein Lauf aktiv ist nicht änderbar — erst "
+            "alle Läufe (auch im Multi-Fenster) stoppen.");
+        return;
+    }
+    // Ein laufender Scan liest live cfg_-Felder (registry_url/-condition,
+    // mb_useragent) im Worker-Thread. `cfg_ = dlg.config()` unten würde diese
+    // std::string-Felder gleichzeitig überschreiben → Data-Race/UB. Solange
+    // ein Scan/Preview läuft, Einstellungen nicht öffnen.
+    if (scanBusy_.load() || previewBusy_.load() || metaBusy_.load()) {
+        QMessageBox::information(this, "Einstellungen",
+            "Während eine Disc-/Metadaten-Suche läuft nicht änderbar — "
+            "kurz warten, bis der Scan fertig ist.");
         return;
     }
     SettingsDialog dlg(cfg_, QString::fromStdString(cfgPath_), this);
@@ -2659,7 +3909,30 @@ SettingsDialog::SettingsDialog(const cdr::Config& c, QString cfgPath,
     // Seite 1 — Laufwerk & Rip
     {
         auto* w = new QWidget; auto* f = new QFormLayout(w);
-        device_     = new QLineEdit(S(c.device));
+        device_     = new QComboBox;
+        device_->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+        device_->setToolTip("Laufwerk für die Kalibrierung wählen.");
+        {   // Alle erkannten Laufwerke + Hersteller/Modell; das konfigurierte
+            // vorwählen (auch wenn es gerade nicht angeschlossen ist).
+            auto devs = cdr::list_optical_devices();
+            bool have_cfg = false;
+            for (const auto& d : devs) {
+                QString label = QString::fromStdString(d);
+                cdr::HwInfo hw = cdr::drive_hwinfo(d);
+                if (hw.ok) {
+                    QString m = QString::fromStdString(
+                        (hw.vendor + " " + hw.model)).trimmed();
+                    if (!m.isEmpty()) label += "  ·  " + m;
+                }
+                device_->addItem(label, QString::fromStdString(d));
+                if (d == c.device) have_cfg = true;
+            }
+            if (!have_cfg && !c.device.empty())
+                device_->addItem(S(c.device) + "  (nicht verbunden)",
+                                 S(c.device));
+            int ix = device_->findData(S(c.device));
+            device_->setCurrentIndex(ix >= 0 ? ix : 0);
+        }
         readSpeed_  = new QComboBox;
         fillSpeedCombo(readSpeed_);
         selectSpeed(readSpeed_, c.read_speed);
@@ -2719,8 +3992,11 @@ SettingsDialog::SettingsDialog(const cdr::Config& c, QString cfgPath,
         tmpdir_    = new QLineEdit(S(c.tmpdir));
         musicRoot_ = new QLineEdit(S(c.music_root));
         acoustidKey_ = new QLineEdit(S(c.acoustid_key));
+        discogsToken_ = new QLineEdit(S(c.discogs_token));
+        discogsToken_->setEchoMode(QLineEdit::PasswordEchoOnEdit);
         f->addRow("MusicBrainz UA:", ua_);
         f->addRow("AcoustID-Key:", acoustidKey_);
+        f->addRow("Discogs-Token:", discogsToken_);
         f->addRow("Temp-Verzeichnis:", tmpdir_);
         f->addRow("Zielordner (music_root):", musicRoot_);
         pages->addWidget(w);
@@ -2795,12 +4071,38 @@ SettingsDialog::SettingsDialog(const cdr::Config& c, QString cfgPath,
         readOffset_->setValue(c.read_offset);
         readOffset_->setToolTip("Manueller Fallback. Pro Laufwerk kalibrierte "
                                 "Werte haben Vorrang (drive_offsets.ini).");
+        // Eigene Laufwerks-Auswahl fürs Kalibrieren — vorher stand hier nur
+        // ein Label mit dem auf Seite 1 gewählten Gerät, sodass man das
+        // Kalibrier-Laufwerk hier gar nicht wechseln konnte.
+        calibDev_ = new QComboBox;
+        calibDev_->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+        {
+            auto devs = cdr::list_optical_devices();
+            for (const auto& d : devs) {
+                QString label = QString::fromStdString(d);
+                cdr::HwInfo hw = cdr::drive_hwinfo(d);
+                if (hw.ok) {
+                    QString m = QString::fromStdString(
+                        (hw.vendor + " " + hw.model)).trimmed();
+                    if (!m.isEmpty()) label += "  ·  " + m;
+                }
+                calibDev_->addItem(label, QString::fromStdString(d));
+            }
+            if (calibDev_->count() == 0 && !c.device.empty())
+                calibDev_->addItem(S(c.device), S(c.device));
+            int ix = calibDev_->findData(S(c.device));
+            calibDev_->setCurrentIndex(ix >= 0 ? ix : 0);
+        }
         driveLbl_ = new QLabel;
         driveLbl_->setWordWrap(true);
-        calibrateBtn_ = new QPushButton("Dieses Laufwerk jetzt kalibrieren…");
+        calibrateBtn_ = new QPushButton("Gewähltes Laufwerk jetzt kalibrieren…");
         f->addRow("", accuraterip_);
         f->addRow("Manueller Offset:", readOffset_);
-        f->addRow("Laufwerk:", driveLbl_);
+        f->addRow("Laufwerk:", calibDev_);
+        f->addRow("", driveLbl_);
+        // Laufwerkswechsel → Info + Tabellen-Markierung aktualisieren.
+        connect(calibDev_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, [this](int) { refreshDriveInfo(); populateDriveTable(); });
         v->addLayout(f);
         v->addWidget(calibrateBtn_);
         v->addWidget(new QLabel(
@@ -3038,7 +4340,8 @@ QString SettingsDialog::selectedProfile() const {
 }
 
 void SettingsDialog::applyConfig(const cdr::Config& c) {
-    device_->setText(S(c.device));
+    { int ix = device_->findData(S(c.device));
+      if (ix >= 0) device_->setCurrentIndex(ix); }
     selectSpeed(readSpeed_, c.read_speed);
     selectPreset(preset_, c.audio_format, c.audio_quality);
     replaygain_->setChecked(c.replaygain);
@@ -3054,6 +4357,7 @@ void SettingsDialog::applyConfig(const cdr::Config& c) {
     overwrite_->setChecked(c.overwrite_existing);
     ua_->setText(S(c.mb_useragent));
     acoustidKey_->setText(S(c.acoustid_key));
+    discogsToken_->setText(S(c.discogs_token));
     tmpdir_->setText(S(c.tmpdir));
     musicRoot_->setText(S(c.music_root));
     int bi = 0;
@@ -3101,7 +4405,7 @@ void SettingsDialog::onNewProfile() {
 
 cdr::Config SettingsDialog::config() const {
     cdr::Config c = base_;
-    c.device       = device_->text().toStdString();
+    c.device       = device_->currentData().toString().toStdString();
     c.read_speed   = readSpeed_->currentData().toInt();
     {
         const QStringList kv =
@@ -3123,6 +4427,7 @@ cdr::Config SettingsDialog::config() const {
     c.jukebox      = jukebox_->isChecked();
     c.mb_useragent = ua_->text().toStdString();
     c.acoustid_key = acoustidKey_->text().trimmed().toStdString();
+    c.discogs_token = discogsToken_->text().trimmed().toStdString();
     c.tmpdir       = tmpdir_->text().toStdString();
     c.music_root   = musicRoot_->text().toStdString();
     c.upload_backend = backend_->currentText().toStdString();
@@ -3148,7 +4453,7 @@ cdr::Config SettingsDialog::config() const {
 }
 
 void SettingsDialog::refreshDriveInfo() {
-    std::string dev = device_->text().toStdString();
+    std::string dev = calibDev_->currentData().toString().toStdString();
     cdr::HwInfo h = cdr::drive_hwinfo(dev);
     std::string did = cdr::drive_id(dev);
     QString info = "<b>" + S(did) + "</b><br>";
@@ -3165,7 +4470,8 @@ void SettingsDialog::refreshDriveInfo() {
 
 void SettingsDialog::populateDriveTable() {
     auto rows = cdr::list_drive_offsets();
-    std::string curId = cdr::drive_id(device_->text().toStdString());
+    std::string curId = cdr::drive_id(
+        calibDev_->currentData().toString().toStdString());
     driveTbl_->setRowCount((int)rows.size());
     for (int i = 0; i < (int)rows.size(); ++i) {
         const std::string& id = rows[i].id;
@@ -3252,9 +4558,13 @@ void SettingsDialog::onCalibrate() {
             refreshDriveInfo();
             populateDriveTable();
         });
-    QStringList args{ "--calibrate", "--device", device_->text() };
+    // Eigene Binary aufrufen (im Flatpak /app/bin/cdripper — der frühere
+    // feste Pfad /usr/local/bin/cdripper existiert dort nicht, weshalb die
+    // Kalibrierung bisher sofort scheiterte).
+    QStringList args{ "--calibrate", "--device",
+                      calibDev_->currentData().toString() };
     if (!cfgPath_.isEmpty()) { args << "--config" << cfgPath_; }
-    proc->start("/usr/local/bin/cdripper", args);
+    proc->start(QCoreApplication::applicationFilePath(), args);
     dlg->exec();
     dlg->deleteLater();
 }

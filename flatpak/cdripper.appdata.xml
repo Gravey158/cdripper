@@ -26,6 +26,116 @@
   <developer_name>Dennis</developer_name>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="1.9.18" date="2026-07-07">
+      <description>
+        <p>Zwei Ärgernisse beim Rippen mit manuell gewählten Metadaten behoben: (1) Der MusicBrainz-„Release wählen"-Dialog erscheint nicht mehr, wenn die Metadaten bereits manuell (per Metadaten-Suche) gesetzt wurden — cdripper nimmt stumm die manuelle Wahl. (2) Erscheint der Dialog doch (ohne manuelle Wahl), bricht „Abbrechen" jetzt den Rip ab, statt stillschweigend mit einer geratenen Veröffentlichung weiterzurippen.</p>
+      </description>
+    </release>
+    <release version="1.9.17" date="2026-07-07">
+      <description>
+        <p>Metadaten-Suche zeigt jetzt in jeder Trefferzeile Label, Katalognummer und Barcode (bei Discogs UND MusicBrainz), plus alle Details als Tooltip — damit lässt sich die exakte Pressung eindeutig zuordnen, auch wenn Discogs in der Suche keine Titelzahl liefert. Das Track-Zahl-Häkchen wird im Discogs-Modus ausgeblendet (dort gibt es keine Titelzahl), statt nur ausgegraut.</p>
+      </description>
+    </release>
+    <release version="1.9.16" date="2026-07-07">
+      <description>
+        <p>Metadaten-Übernahme deutlich verbessert. Behoben: beim Übernehmen wurde nur der erste Titel und nicht die Künstler-Spalte aktualisiert (der falsche Interpret blieb stehen) — jetzt werden alle Zeilen korrekt gesetzt. Neu: das Cover wird beim Übernehmen mitgeladen (MusicBrainz via Cover Art Archive, Discogs über die Bild-URL). Manuell gewählte Metadaten sind jetzt „sticky": sie überschreiben die Auto-Erkennung und überleben den Rip-Start (vorher wurden sie beim Start wieder überschrieben). Weicht die Titelzahl der gewählten Veröffentlichung von der Disc ab (z. B. Promo-Single vs. 3-Track-Disc), wird das jetzt klar angesagt. Zusätzlich neuer kombinierter Modus „MusicBrainz + Discogs": MB als Basis (Cover/Titel), fehlende Metadaten (Genres, Label, Katalognr., Barcode) aus dem in MB verlinkten Discogs-Release ergänzt.</p>
+      </description>
+    </release>
+    <release version="1.9.15" date="2026-07-07">
+      <description>
+        <p>Discogs als zweite Metadaten-Quelle: Im Metadaten-Such-Popup lässt sich jetzt zwischen MusicBrainz und Discogs umschalten. Discogs deckt Promos, Maxis und Singles ab, die MusicBrainz oft fehlen (z. B. eine „Let It Rain"-CD-Single). Einmalig einen kostenlosen Discogs-Personal-Access-Token in Einstellungen → Discogs-Token hinterlegen (discogs.com/settings/developers). Die gewählte Veröffentlichung wird mit Künstler, Titel, Jahr, Label und kompletter Tracklist übernommen.</p>
+      </description>
+    </release>
+    <release version="1.9.14" date="2026-07-07">
+      <description>
+        <p>Metadaten-Suche findet jetzt auch kurze Maxis/Singles: Die Treffer werden nach Nähe zur Track-Zahl der eingelegten Disc sortiert (passende Länge zuerst), und ein neues Häkchen „Nur Veröffentlichungen mit N Titeln (passend zur Disc)" filtert MusicBrainz hart auf die Disc-Länge — so verschwindet z. B. eine 3-Track-CD nicht mehr hinter den populären 10/13-Track-Alben. Zusätzlich ist die Stichwortsuche jetzt eine breite Query (Release + Künstler) statt einer exakten Titel-Phrase, was Mehrwort-Suchen zuverlässiger macht.</p>
+      </description>
+    </release>
+    <release version="1.9.13" date="2026-07-07">
+      <description>
+        <p>Der animierte Hintergrund reagiert jetzt auf den Status (PlayStation-UI-Vibe): Bei erfolgreicher CD pulsiert er einmal grün, bei einem Fehler rot — ein weicher radialer Fade aus der Mitte in die Statusfarbe und wieder zurück zur Originalfarbe. Gilt für Einzel- und Multi-Fenster (dort pro Laufwerk).</p>
+      </description>
+    </release>
+    <release version="1.9.12" date="2026-07-07">
+      <description>
+        <p>Einzel-Fenster zieht mit dem Multi-Fenster gleich: die Track-Tabelle nutzt jetzt denselben fancy Fortschrittsbalken (Gradient, Glanzlicht, pulsierender End-Glow, Konturschrift, Funkeln statt schlichtem blauen Balken), und die aktiv bearbeitete Zeile hebt sich in der Cover-Farbe ab.</p>
+      </description>
+    </release>
+    <release version="1.9.11" date="2026-07-07">
+      <description>
+        <p>Stabilitäts- und Portabilitäts-Runde (Code-Review). Multi-Laufwerk („Wettrennen") gehärtet: eigenes Temp-Verzeichnis pro Laufwerk (verhindert, dass zwei Discs mit gleichem Namen sich die Dateien überschreiben), thread-sichere Geräte-/Metadaten-Zugriffe (behebt seltene Abstürze beim „Alle scannen"), thread-sicherer Rip-Report, und der WebDAV-Upload blockiert nicht mehr die anderen Laufwerke. Fix: der Einstellungs-Dialog konnte nach Schließen des Multi-Fensters während eines Laufs dauerhaft gesperrt bleiben. Härtung gegen kaputte Worker-Zeilen (Bounds-/Parse-Checks) und garantiertes Aufräumen der Threads im Fehlerfall. Portierung nach macOS und Windows aufgefrischt: korrektes Argument-Quoting für externe Tools auf Windows (Pfade mit Leerzeichen), plattformrichtige Config-/Log-Pfade, portable Benachrichtigungen und Prozess-IDs; nativer macOS-Build verifiziert.</p>
+      </description>
+    </release>
+    <release version="1.9.10" date="2026-07-07">
+      <description>
+        <p>Fix: In eingebetteten Songtexten wurden Umlaute als #### dargestellt. Ursache war, dass metaflac beim Einbetten der bereits UTF-8-kodierten Lyrics diese fälschlich als lokales Zeichensatz interpretierte (--no-utf8-convert fehlte, anders als beim Encode). Ab jetzt erscheinen äöüß korrekt. Gilt für neu gerippte Tracks; bereits eingebettete Texte in der Bibliothek bleiben unberührt.</p>
+      </description>
+    </release>
+    <release version="1.9.9" date="2026-07-07">
+      <description>
+        <p>Bling jetzt auch im Einzel-Fenster: derselbe animierte Glitzer-/Glow-Hintergrund wie im Multi-Fenster, ein atmender Cover-Glow, der seine Farbe aus dem Album-Cover zieht, und die edlere, halbtransparente Tabelle mit kräftigerem Header. Damit sehen Haupt- und Multi-Fenster einheitlich aus.</p>
+      </description>
+    </release>
+    <release version="1.9.8" date="2026-07-07">
+      <description>
+        <p>Metadaten-Such-Popup im Hauptfenster: Bei falsch erkanntem Album (z. B. „Bryan Adams" statt „Phil Fuldner") jetzt „🔍 Metadaten suchen…" — Stichworte eingeben, in MusicBrainz die richtige Veröffentlichung wählen, und Album-Artist, -Titel, Jahr sowie alle Track-Titel werden übernommen (greifen ab dem Rip). Löst die Fehlerkennung bei mehrdeutigen kurzen Discs an der Wurzel.</p>
+      </description>
+    </release>
+    <release version="1.9.7" date="2026-07-07">
+      <description>
+        <p>Fix: Der animierte Hintergrund schien durch die Disc-Karten (sie wirkten verwaschen) — jetzt sind die Karten wieder opak, der Glitzer bleibt in den Lücken und hinter der Tabelle. Neu: ein ziehbarer, leuchtender Trennbalken zwischen den Disc-Karten und der Tabelle/Log — am Griff nach oben/unten ziehen, um dem oberen oder unteren Bereich mehr Platz zu geben.</p>
+      </description>
+    </release>
+    <release version="1.9.6" date="2026-07-07">
+      <description>
+        <p>Noch mehr Bling: Das Multi-Fenster hat jetzt einen animierten Hintergrund — dunkle Basis mit langsam wandernden weichen Farb-Glows und aufsteigenden, funkelnden Glitzer-Partikeln (dezent, damit die Lesbarkeit bleibt). Die Sammeltabelle ist luftiger, halbtransparent (der Glitzer schimmert durch), mit größerer Schrift und kräftigerem Spaltenkopf.</p>
+      </description>
+    </release>
+    <release version="1.9.5" date="2026-07-07">
+      <description>
+        <p>Titel-Spalte repariert: Im Multi-Fenster standen dort teils AccurateRip-Meldungen oder gar nichts statt der Track-Titel. Die Titel werden jetzt aus den erkannten Metadaten gefüllt (auch im Turbo-Dauerlauf), die Statusmeldung wandert als Tooltip auf die Status-Zelle. Fehlen Metadaten, steht ein grauer „Track N"-Platzhalter statt Müll.</p>
+      </description>
+    </release>
+    <release version="1.9.4" date="2026-07-07">
+      <description>
+        <p>Storno pro Laufwerk: Jedes Panel hat jetzt einen „⏏ Abbrechen &amp; Auswerfen"-Knopf, der nur während eines laufenden Rips aktiv ist. Er stoppt den Rip dieses einen Laufwerks (z. B. bei falsch erkanntem Album/Cover) und wirft die CD danach automatisch aus — ohne die anderen Laufwerke zu stören.</p>
+      </description>
+    </release>
+    <release version="1.9.3" date="2026-07-07">
+      <description>
+        <p>Mehr Bling im Multi-Laufwerk-Fenster: Der Fortschrittsbalken hat jetzt einen Farbverlauf, ein Glanzlicht und ein pulsierendes Leucht-Ende; der Prozent-Text bekam eine dunkle Kontur und ist damit auf jedem Balken lesbar (vorher kollidierte Textfarbe mit Balkenfarbe). Cover-Glow und Status-Pille „atmen" jetzt (sanfte Puls-Animation), die Pille leuchtet in der jeweiligen Zustandsfarbe. Neu: Der Cover-Glow färbt sich nach der dominanten Farbe des Albumcovers (fällt bei s/w-Covern auf die Laufwerksfarbe zurück). Dezenter Text-Glow am Album-Titel.</p>
+      </description>
+    </release>
+    <release version="1.9.2" date="2026-07-05">
+      <description>
+        <p>Multi-Laufwerk-Politur: Im Dauerlauf werden Cover, Album und die Tabellenzeilen eines Laufwerks bei jeder neuen Disc sauber zurückgesetzt. Jedes Panel zeigt jetzt eine farbige Status-Pille und einen Rahmen-Glow je Zustand (leer / Disc erkannt / Scan / Rip läuft / fertig / ausgeworfen); der Bug, dass während des Rips „Scan läuft" hängen blieb, ist behoben (Live-Rip-Zellen ändern den Status nicht mehr). Die %-Spalte hat jetzt einen animierten Fortschrittsbalken mit nach rechts fließender Diagonal-Schraffur (wie im Hauptfenster), der aktive Track leuchtet grün mit Sparkle. Auswurf wird verifiziert und meldet klar, ob die CD sicher entnehmbar ist oder das Fach von Hand geöffnet werden muss. AccurateRip-Tab: eigenes Laufwerks-Dropdown zum Kalibrieren (vorher nur ein Label). Einstellungen werden global gesperrt, solange irgendwo ein Rip läuft (nicht mehr übers andere Fenster umgehbar). Cover mit Bling: farbiger Glow, ausgefadete Spiegelung, leichte 3D-Neigung.</p>
+      </description>
+    </release>
+    <release version="1.9.1" date="2026-07-05">
+      <description>
+        <p>Automatische Kalibrierung neuer Laufwerke: Ist ein Laufwerk weder lokal noch über die Offset-Registry kalibriert, wird der AccurateRip-Drive-Offset jetzt beim ersten regulären Rip aus den Audiodaten ermittelt und gespeichert — kein separater Kalibrier-Durchlauf mehr nötig. Ab der nächsten CD ist das Laufwerk kalibriert. Klappt nur mit einer in AccurateRip bekannten Mainstream-CD; ist die erste Disc unbekannt, wird es bei der nächsten erneut versucht.</p>
+      </description>
+    </release>
+    <release version="1.9.0" date="2026-07-05">
+      <description>
+        <p>Upload-Härtung gegen HTTP 429 (Rate-Limit): Beim Parallel-Rip mehrerer Laufwerke überfuhren gleichzeitige WebDAV-Requests Nextcloud, sodass Uploads reihenweise scheiterten. Jetzt wird jeder Zielordner nur einmal angelegt (prozessweiter MKCOL-Cache statt pro Track und Laufwerk), alle WebDAV-Requests laufen serialisiert mit kleinem Mindestabstand, und 429-Antworten führen zu Retry-After-bewusstem Backoff statt zum Abbruch. Zuverlässigerer CD-Auswurf: zusätzlich zum ioctl jetzt ein SCSI-START-STOP-Fallback (nötig für die USB-Slim-Laufwerke) plus großzügigere Retry-Schleife. Multi-Laufwerk-Fenster: Einstellungen-Button (öffnet den vollen Settings-Dialog inkl. Kalibrieren) und Turbo-Schalter (Dauerlauf — nach jeder CD auswerfen und die nächste rippen, bis gestoppt; default an). Settings-Dialog: Laufwerksauswahl ist jetzt ein Dropdown aller erkannten Laufwerke (vorher fix /dev/sr0 — andere Laufwerke ließen sich nicht kalibrieren). Kalibrierung ruft wieder die richtige Programmdatei auf (der feste Pfad /usr/local/bin/cdripper existiert im Flatpak nicht, weshalb sie bisher sofort abbrach).</p>
+      </description>
+    </release>
+    <release version="1.8.8" date="2026-07-05">
+      <description>
+        <p>Multi-Laufwerk-Fenster: Scans und Disc-Vorschau melden sich jetzt im Protokoll (Metadaten-Quelle, Trackzahl, Cover, Scan-Ergebnis mit Fehlerzellen-Zähler) — vorher war das Log während des Scannens leer, es hörte nur auf Rip-Events. Laufwerke sind farbcodiert (gedeckte, dunkeltaugliche Palette, farbenblind-geprüft): Farbrand + Punkt am Panel, Farbquadrat und dezenter Zeilen-Tint in der Sammeltabelle, Farbpunkt vor jeder Log-Zeile.</p>
+      </description>
+    </release>
+    <release version="1.8.7" date="2026-07-05">
+      <description>
+        <p>Multi-Laufwerk-Cover-Fix: Die Disc-Vorschau lud die Cover aller Panels in dieselbe Datei (tmp/mpreview/cover.jpg) — bei parallelem Scan von 2–3 Laufwerken überschrieben sich die Downloads gegenseitig (vertauschte und korrupte Cover). Jetzt bekommt jedes Laufwerk sein eigenes Vorschau-Verzeichnis (mpreview-srN).</p>
+      </description>
+    </release>
+    <release version="1.8.6" date="2026-07-05">
+      <description>
+        <p>Randlose Fenster unter Linux (X11+Wayland) an allen Kanten/Ecken per Maus resizebar (startSystemResize inkl. Cursor-Feedback; obere 8 px der Titelleiste = Resize statt Drag). Laufwerks-Erkennung robuster: cdio-Liste mit /dev/sr*-Glob vereinigt, Symlinks (/dev/cdrom) per realpath kanonisiert und dedupliziert — das Multi-Drive-Fenster zeigt jedes physische Laufwerk genau einmal als /dev/srN. Single-Instance-Guard: nur eine Instanz darf gleichzeitig das optische Laufwerk benutzen (QLockFile, PID-aware — ein toter Lock nach Crash wird automatisch erkannt). Verhindert blockierte Reads und Track-1-Hänger, wenn mehrere Fenster offen sind. Die Worker-Subprozesse (Rip/Probe) bleiben unberührt.</p>
+      </description>
+    </release>
     <release version="1.7.10" date="2026-05-21">
       <description>
         <p>Repo-Politur: README + LICENSE + Issue-Templates, neuer Icon (CD mit Holo-Spectrum + Specular + Drop-Shadow), GitHub Actions CI Matrix für Linux+Mac+Windows, alte Mac-DMGs vom Cluster-Repo geputzt.</p>

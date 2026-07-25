@@ -6,7 +6,9 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 #include <filesystem>
@@ -21,7 +23,7 @@ namespace cdr {
 //   PATCH  kleiner Bugfix / kleine Änderung
 // Bei jeder veröffentlichten Änderung hier hochzählen und im lokalen
 // Git-Repo einen passenden Tag setzen (git tag -a vX.Y.Z).
-constexpr const char* VERSION = "1.8.5";
+constexpr const char* VERSION = "1.9.18";
 
 struct Config {
     std::string device        = "/dev/sr0";   // primäres/Single-Laufwerk
@@ -41,6 +43,10 @@ struct Config {
     // AcoustID/Chromaprint API-Key (kostenlos: acoustid.org/new-application).
     // Leer = akustischer Fingerprint-Fallback aus.
     std::string acoustid_key;
+    // Discogs Personal-Access-Token (kostenlos: discogs.com/settings/developers).
+    // Leer = Discogs-Suche aus (Discogs deckt v. a. Promos/Maxis/Singles ab,
+    // die MusicBrainz oft fehlen). Nur für die manuelle Metadaten-Suche.
+    std::string discogs_token;
     bool        dry_run       = false;  // rippen/encoden, aber nicht hochladen
     int         read_speed    = 0;      // 0 = Laufwerks-Default; kleiner (z.B.
                                         // 4/8) = bessere Recovery zerkratzter CDs
@@ -126,6 +132,7 @@ struct Album {
     bool        compilation = false;  // → COMPILATION=1 (Sampler/Various)
     std::vector<Track> tracks;
     fs::path    cover_jpg;       // leer = kein Cover
+    std::string cover_url;       // transient: Cover-URL (z. B. Discogs-Bild)
 
     std::string year() const;
     // "Artist/Album (Jahr)" als einzelne Pfadsegmente (schon sanitisiert)
@@ -182,10 +189,41 @@ std::optional<Album> cddb_lookup(const std::string& toc, const std::string& ua);
 
 // Manuelle MusicBrainz-Textsuche: Release-Kandidaten zu Interpret/Album
 // (ohne Tracklist — die zieht mb_release_by_id für die gewählte Release).
-struct ReleaseHit { std::string mbid, artist, title, date, country; int tracks = 0; };
+// mbid trägt bei MusicBrainz die MBID, bei Discogs die (numerische) Release-ID.
+// format ist nur bei Discogs gefüllt (z. B. "CD, Single, Promo") — hilft, die
+// richtige Pressung zu erkennen.
+struct ReleaseHit {
+    std::string mbid, artist, title, date, country, format;
+    std::string label, catno, barcode;   // v. a. Discogs (zur Pressung-Auswahl)
+    int tracks = 0;
+};
 std::vector<ReleaseHit> mb_search_releases(const std::string& artist,
                                            const std::string& title,
                                            const std::string& ua);
+// Freie Stichwort-Suche (Dialog). prefer_tracks>0 → Ergebnisse nach Nähe zur
+// Disc-Track-Zahl sortiert; strict_tracks → hart auf diese Track-Zahl gefiltert
+// (findet z. B. eine 3-Track-Maxi, die sonst hinter den Alben verschwindet).
+std::vector<ReleaseHit> mb_search_free(const std::string& query,
+                                       int prefer_tracks, bool strict_tracks,
+                                       const std::string& ua);
+
+// Discogs-Suche (braucht einen Personal-Access-Token). Deckt v. a. Promos/
+// Maxis/Singles ab, die MusicBrainz fehlen. Leerer Token → leeres Ergebnis.
+// Discogs' Such-API liefert keine Track-Zahl → ReleaseHit.tracks bleibt 0,
+// aber format ("CD, Single, …") hilft bei der Auswahl.
+std::vector<ReleaseHit> discogs_search(const std::string& query,
+                                       const std::string& token,
+                                       const std::string& ua);
+// Volle Discogs-Release per (numerischer) ID → Album mit Tracklist.
+std::optional<Album> discogs_release_by_id(const std::string& id,
+                                           const std::string& token,
+                                           const std::string& ua);
+// Kombiniert: MB-Release als Anker (Cover/Track-IDs/Titel), Lücken (Genres,
+// Label, Katalognr., Barcode, Land) aus dem in MB verlinkten Discogs-Release
+// füllen. Leerer Token oder kein Discogs-Link → reines MB-Ergebnis.
+std::optional<Album> mb_release_enriched(const std::string& mbid, int want_tracks,
+                                         const std::string& discogs_token,
+                                         const std::string& ua);
 // Volle Release per MBID (Medium nach Wunsch-Trackzahl, sonst erstes).
 std::optional<Album> mb_release_by_id(const std::string& mbid,
                                       int want_tracks, const std::string& ua);
@@ -209,6 +247,13 @@ std::string fetch_synced_lyrics(const std::string& artist,
                                 const std::string& title,
                                 const std::string& album,
                                 int duration_sec, const std::string& ua);
+
+// Bettet den Inhalt der LRC-Datei als Vorbis-`LYRICS`-Tag in die FLAC-Datei
+// ein (ersetzt vorhandene). Läuft über metaflac via den argv-Runner (kein
+// Shell → keine Injection, korrektes Quoting, findet metaflac auch im
+// App-Verzeichnis auf Windows/mac). --no-utf8-convert: die LRC ist bereits
+// UTF-8. true = erfolgreich (metaflac exit 0).
+bool embed_flac_lyrics(const fs::path& flac, const fs::path& lrc);
 
 // ── Laufwerk / Ripping ─────────────────────────────────────────────────────────
 struct AudioTrack { int index; int cd_track; int n_sectors; };
@@ -291,6 +336,18 @@ bool save_drive_offset(const std::string& drive_id, int offset);
 bool delete_drive_offset(const std::string& drive_id);
 struct DriveOffset { std::string id; int offset; };
 std::vector<DriveOffset> list_drive_offsets();
+
+// Ermittelt den AccurateRip-Drive-Offset aus einem bereits gerippten
+// Arbeitsverzeichnis (je Track eine <idx>.wav, 44.1/16/stereo). Sweept den
+// Offset gegen die AccurateRip-Datenbank (via TOC-Offsets + Leadout) und
+// gibt den besten Offset zurück, bei dem die meisten Tracks bestätigt sind;
+// matched enthält deren Anzahl. nullopt, wenn die Disc nicht in AccurateRip
+// ist oder kein Offset passt. Genau derselbe Sweep wie --calibrate, nur auf
+// den WAVs eines regulären Rips → opportunistische Auto-Kalibrierung ohne
+// zweiten Durchlauf.
+std::optional<int> calibrate_offset_from_wavs(
+    const fs::path& dir, int n, const std::vector<int>& ar_offsets,
+    int leadout, const std::string& useragent, int& matched);
 
 // Im System erkannte optische Laufwerke (Gerätepfade, z.B. /dev/sr0).
 // Leer = keins gefunden (dann Fallback auf konfiguriertes Gerät).
@@ -434,6 +491,13 @@ public:
 private:
     const Config& cfg_;
     std::string base_;   // …/remote.php/dav/files/<user>
+    // Prozessweiter Cache bereits angelegter Verzeichnisse (kanonische
+    // URL). Mehrere WebDav-Instanzen (ein Objekt je Laufwerk) teilen ihn
+    // sich → derselbe Music/Artist-Ordner wird nur EINMAL per MKCOL
+    // angelegt, nicht pro Track und pro Laufwerk erneut. Das war die
+    // Haupt-429-Quelle beim Parallel-Rip.
+    static std::mutex          dir_mu_;
+    static std::set<std::string> dirs_made_;
 };
 
 class LocalUploader : public Uploader {     // lokaler Pfad / gemounteter Share

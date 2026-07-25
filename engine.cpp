@@ -35,6 +35,7 @@
 #endif
 #ifdef __linux__
 #  include <linux/cdrom.h>
+#  include <scsi/sg.h>          // SG_IO: START STOP UNIT als Eject-Fallback
 #endif
 #include <sys/stat.h>
 #ifndef _WIN32
@@ -77,6 +78,17 @@ static FILE* fopen_path(const fs::path& p, const char* mode) {
 #endif
 }
 
+// Portable PID: getpid() ist auf MSVC nicht deklariert (nur _getpid in
+// <process.h>); unistd.h ist auf Windows ausgeklammert. GetCurrentProcessId
+// braucht kein zusätzliches Include (windows.h ist schon da).
+static unsigned long proc_pid() {
+#ifdef _WIN32
+    return (unsigned long)::GetCurrentProcessId();
+#else
+    return (unsigned long)::getpid();
+#endif
+}
+
 std::string sanitize(const std::string& in) {
     std::string o;
     o.reserve(in.size());
@@ -91,7 +103,17 @@ std::string sanitize(const std::string& in) {
     while (!o.empty() && o.back() == '.') o.pop_back();
     o = trim(o);
     if (o.empty()) o = "Unknown";
-    if (o.size() > 120) o.resize(120);
+    if (o.size() > 120) {
+        // Nicht mitten in eine UTF-8-Mehrbyte-Sequenz schneiden (sonst
+        // ungültiges UTF-8 im Ordner-/Dateinamen). Auf Codepoint-Grenze
+        // zurückgehen: Fortsetzungsbytes sind 10xxxxxx.
+        size_t cut = 120;
+        while (cut > 0 && (static_cast<unsigned char>(o[cut]) & 0xC0) == 0x80)
+            --cut;
+        o.resize(cut);
+        o = trim(o);
+        if (o.empty()) o = "Unknown";
+    }
     return o;
 }
 
@@ -159,6 +181,12 @@ std::vector<std::string> Album::folder_segments() const {
 // ───────────────────────────── Config ─────────────────────────────────────────
 
 std::string default_config_path() {
+#ifdef _WIN32
+    // Auf Windows ist HOME meist ungesetzt → sonst landet die Config als
+    // ./cdripper.ini im CWD. %APPDATA% (Roaming) ist der richtige Ort.
+    if (const char* a = std::getenv("APPDATA"); a && *a)
+        return std::string(a) + "\\cdripper\\config.ini";
+#endif
     if (const char* x = std::getenv("XDG_CONFIG_HOME"); x && *x)
         return std::string(x) + "/cdripper/config.ini";
     if (const char* h = std::getenv("HOME"); h && *h)
@@ -239,6 +267,7 @@ Config load_config(const std::string& path) {
             else if (k == "tmpdir")        c.tmpdir        = v;
             else if (k == "musicbrainz_useragent") c.mb_useragent = v;
             else if (k == "acoustid_key")  c.acoustid_key  = v;
+            else if (k == "discogs_token") c.discogs_token = v;
             else if (k == "read_speed")    c.read_speed = std::atoi(v.c_str());
             else if (k == "upload_retries") c.upload_retries = std::atoi(v.c_str());
             else if (k == "replaygain")    c.replaygain =
@@ -303,6 +332,7 @@ bool save_config(const Config& c, const std::string& path) {
       << "tmpdir = "         << c.tmpdir       << "\n"
       << "musicbrainz_useragent = " << c.mb_useragent << "\n"
       << "acoustid_key = "   << c.acoustid_key << "\n"
+      << "discogs_token = "  << c.discogs_token << "\n"
       << "replaygain = "     << b(c.replaygain) << "\n"
       << "audio_format = "   << c.audio_format  << "\n"
       << "audio_quality = "  << c.audio_quality << "\n"
@@ -1137,7 +1167,7 @@ bool append_archive(const ArchiveEntry& e) {
     std::error_code ec;
     fs::create_directories(config_dir(), ec);
     std::string tmp = archive_path() + ".tmp." +
-                      std::to_string(::getpid());
+                      std::to_string(proc_pid());
     {
         std::ofstream o(tmp, std::ios::trunc);
         if (!o) return false;
@@ -1448,19 +1478,24 @@ std::vector<Album> mb_release_candidates(const std::string& discid,
                 if (!m) continue;
                 if (auto a = parse_release(r, *m)) out.push_back(std::move(*a));
             }
-            std::stable_sort(out.begin(), out.end(),   // exakte Treffer vorn
-                [&](const Album& x, const Album&) {
-                    for (const auto& r : j["releases"]) {
-                        if (jstr(r, "id") != x.mb_release_id) continue;
-                        if (!r.contains("media")) return false;
-                        for (const auto& md : r["media"])
-                            if (md.contains("discs"))
-                                for (const auto& d : md["discs"])
-                                    if (jstr(d, "id") == discid)
-                                        return true;
-                    }
-                    return false;
-                });
+            // Exakte Disc-ID-Treffer nach vorn, stabile Reihenfolge sonst.
+            // stable_partition (Prädikat) statt stable_sort (Komparator): ein
+            // „ist Exakt-Treffer"-Komparator, der das 2. Argument ignoriert,
+            // ist KEIN strict-weak-ordering (comp(a,b)==comp(b,a)==true für
+            // zwei Treffer) → UB. stable_partition drückt genau die Absicht aus.
+            auto is_exact = [&](const Album& x) {
+                for (const auto& r : j["releases"]) {
+                    if (jstr(r, "id") != x.mb_release_id) continue;
+                    if (!r.contains("media")) return false;
+                    for (const auto& md : r["media"])
+                        if (md.contains("discs"))
+                            for (const auto& d : md["discs"])
+                                if (jstr(d, "id") == discid)
+                                    return true;
+                }
+                return false;
+            };
+            std::stable_partition(out.begin(), out.end(), is_exact);
             if (!out.empty()) setsrc("exakte Disc-ID");
         }
     }
@@ -1595,16 +1630,11 @@ std::optional<Album> cddb_lookup(const std::string& toc, const std::string& ua) 
 }
 
 // ── Manuelle MusicBrainz-Textsuche ─────────────────────────────────────────────
-std::vector<ReleaseHit> mb_search_releases(const std::string& artist,
-                                           const std::string& title,
-                                           const std::string& ua) {
+// Führt eine fertige Lucene-Release-Query gegen MusicBrainz aus und parst die
+// Treffer (mbid/Titel/Artist/Datum/Land/Track-Zahl der 1. Medium).
+static std::vector<ReleaseHit> mb_run_release_query(const std::string& lucene,
+                                                    const std::string& ua) {
     std::vector<ReleaseHit> out;
-    std::string lucene;
-    if (!title.empty())  lucene += "release:\"" + title + "\"";
-    if (!artist.empty()) {
-        if (!lucene.empty()) lucene += " AND ";
-        lucene += "artist:\"" + artist + "\"";
-    }
     if (lucene.empty()) return out;
     CURL* c = curl_easy_init();
     if (!c) return out;
@@ -1612,7 +1642,7 @@ std::vector<ReleaseHit> mb_search_releases(const std::string& artist,
     curl_easy_cleanup(c);
     long code = 0;
     auto body = http_get("https://musicbrainz.org/ws/2/release/?query=" + q +
-                         "&fmt=json&limit=15", ua, code);
+                         "&fmt=json&limit=25", ua, code);
     std::this_thread::sleep_for(std::chrono::seconds(1));
     if (!body || code != 200) return out;
     json j;
@@ -1631,9 +1661,217 @@ std::vector<ReleaseHit> mb_search_releases(const std::string& artist,
             if (m0.contains("track-count") && m0["track-count"].is_number())
                 h.tracks = m0["track-count"].get<int>();
         }
+        // Barcode + Label/Katalognr. (MB-Search liefert sie) → gleiche Info-
+        // Dichte wie beim Durchsehen auf musicbrainz.org.
+        h.barcode = jstr(r, "barcode");
+        if (r.contains("label-info") && r["label-info"].is_array() &&
+            !r["label-info"].empty()) {
+            const auto& li = r["label-info"][0];
+            h.catno = jstr(li, "catalog-number");
+            if (li.contains("label")) h.label = jstr(li["label"], "name");
+        }
         if (!h.mbid.empty()) out.push_back(std::move(h));
     }
     return out;
+}
+
+std::vector<ReleaseHit> mb_search_releases(const std::string& artist,
+                                           const std::string& title,
+                                           const std::string& ua) {
+    std::string lucene;
+    if (!title.empty())  lucene += "release:\"" + title + "\"";
+    if (!artist.empty()) {
+        if (!lucene.empty()) lucene += " AND ";
+        lucene += "artist:\"" + artist + "\"";
+    }
+    return mb_run_release_query(lucene, ua);
+}
+
+std::vector<ReleaseHit> mb_search_free(const std::string& query,
+                                       int prefer_tracks, bool strict_tracks,
+                                       const std::string& ua) {
+    // Freie Stichwort-Query: MB tokenisiert selbst über Release + Artist
+    // (breiter als release:"…"). Optional hart auf die Track-Zahl der Disc
+    // filtern — so taucht z. B. eine 3-Track-Maxi auf, die sonst hinter den
+    // populären 10/13-Track-Alben verschwindet.
+    std::string lucene = query;
+    if (strict_tracks && prefer_tracks > 0)
+        lucene += " AND tracksmedium:" + std::to_string(prefer_tracks);
+    auto hits = mb_run_release_query(lucene, ua);
+    // Immer nach Nähe zur Disc-Track-Zahl sortieren (passende Länge zuerst).
+    if (prefer_tracks > 0)
+        std::stable_sort(hits.begin(), hits.end(),
+            [prefer_tracks](const ReleaseHit& a, const ReleaseHit& b) {
+                return std::abs(a.tracks - prefer_tracks) <
+                       std::abs(b.tracks - prefer_tracks);
+            });
+    return hits;
+}
+
+// ── Discogs (Zweitquelle, v. a. Promos/Maxis/Singles) ──────────────────────────
+
+// Discogs hängt an mehrfach vorkommende Künstlernamen ein " (N)" an
+// ("Nirvana (2)"). Für Tags unerwünscht → wegschneiden.
+static std::string discogs_clean_artist(std::string s) {
+    s = trim(s);
+    auto p = s.rfind(" (");
+    if (p != std::string::npos && !s.empty() && s.back() == ')' &&
+        p + 2 < s.size() - 1) {
+        bool alldig = true;
+        for (size_t i = p + 2; i + 1 < s.size(); ++i)
+            if (!std::isdigit((unsigned char)s[i])) { alldig = false; break; }
+        if (alldig) s = trim(s.substr(0, p));
+    }
+    return s;
+}
+// „year" kann in Discogs-JSON Zahl ODER String sein.
+static std::string json_year(const json& j, const char* k) {
+    if (!j.is_object()) return "";
+    auto it = j.find(k);
+    if (it == j.end()) return "";
+    if (it->is_string()) return it->get<std::string>();
+    if (it->is_number())  return std::to_string(it->get<int>());
+    return "";
+}
+// artists[]-Array (Album- oder Track-Ebene) zu einem Namen zusammenfügen.
+static std::string discogs_join_artists(const json& arr) {
+    std::string s;
+    if (!arr.is_array()) return s;
+    for (const auto& ar : arr) {
+        std::string nm = discogs_clean_artist(jstr(ar, "name"));
+        std::string jn = trim(jstr(ar, "join"));
+        if (!s.empty() && jn.empty()) s += ", ";
+        s += nm;
+        if (!jn.empty()) s += " " + jn + " ";
+    }
+    return trim(s);
+}
+
+std::vector<ReleaseHit> discogs_search(const std::string& query,
+                                       const std::string& token,
+                                       const std::string& ua) {
+    std::vector<ReleaseHit> out;
+    if (token.empty() || query.empty()) return out;
+    CURL* c = curl_easy_init();
+    if (!c) return out;
+    std::string q = esc(c, query), tok = esc(c, token);
+    curl_easy_cleanup(c);
+    long code = 0;
+    auto body = http_get("https://api.discogs.com/database/search?q=" + q +
+                         "&type=release&per_page=25&token=" + tok, ua, code);
+    std::this_thread::sleep_for(std::chrono::seconds(1));   // Discogs 60/min
+    if (!body || code != 200) return out;
+    json j;
+    try { j = json::parse(*body); } catch (...) { return out; }
+    if (!j.contains("results") || !j["results"].is_array()) return out;
+    for (const auto& r : j["results"]) {
+        ReleaseHit h;
+        if (r.contains("id") && r["id"].is_number())
+            h.mbid = std::to_string(r["id"].get<long long>());
+        // "title" = "Artist - Title" → am ersten " - " trennen.
+        std::string full = jstr(r, "title");
+        auto sep = full.find(" - ");
+        if (sep != std::string::npos) {
+            h.artist = trim(full.substr(0, sep));
+            h.title  = trim(full.substr(sep + 3));
+        } else h.title = full;
+        h.date    = json_year(r, "year");
+        h.country = jstr(r, "country");
+        if (r.contains("format") && r["format"].is_array()) {
+            std::string f;
+            for (const auto& e : r["format"])
+                if (e.is_string()) {
+                    if (!f.empty()) f += ", ";
+                    f += e.get<std::string>();
+                }
+            h.format = f;
+        }
+        // Zur Pressung-Auswahl: Katalognr., Label, Barcode (in Discogs-Search da).
+        h.catno = jstr(r, "catno");
+        if (r.contains("label") && r["label"].is_array() && !r["label"].empty()
+            && r["label"][0].is_string())
+            h.label = r["label"][0].get<std::string>();
+        if (r.contains("barcode") && r["barcode"].is_array() &&
+            !r["barcode"].empty() && r["barcode"][0].is_string()) {
+            std::string bc;
+            for (char ch : r["barcode"][0].get<std::string>())
+                if (!std::isspace((unsigned char)ch)) bc += ch;
+            h.barcode = bc;
+        }
+        if (!h.mbid.empty()) out.push_back(std::move(h));
+    }
+    return out;
+}
+
+std::optional<Album> discogs_release_by_id(const std::string& id,
+                                           const std::string& token,
+                                           const std::string& ua) {
+    if (id.empty() || token.empty()) return std::nullopt;
+    CURL* c = curl_easy_init();
+    if (!c) return std::nullopt;
+    std::string tok = esc(c, token);
+    curl_easy_cleanup(c);
+    long code = 0;
+    auto body = http_get("https://api.discogs.com/releases/" + id +
+                         "?token=" + tok, ua, code);
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    if (!body || code != 200) return std::nullopt;
+    json r;
+    try { r = json::parse(*body); } catch (...) { return std::nullopt; }
+    Album a;
+    if (r.contains("artists")) a.artist = discogs_join_artists(r["artists"]);
+    a.title   = jstr(r, "title");
+    a.date    = json_year(r, "year");
+    a.country = jstr(r, "country");
+    if (r.contains("genres") && r["genres"].is_array())
+        for (const auto& g : r["genres"]) if (g.is_string()) a.genres.push_back(g.get<std::string>());
+    if (r.contains("styles") && r["styles"].is_array())
+        for (const auto& g : r["styles"]) if (g.is_string()) a.genres.push_back(g.get<std::string>());
+    // Cover-URL: primäres Bild bevorzugen, sonst das erste.
+    if (r.contains("images") && r["images"].is_array() && !r["images"].empty()) {
+        std::string uri;
+        for (const auto& im : r["images"]) {
+            std::string u = jstr(im, "uri");
+            if (u.empty()) continue;
+            if (jstr(im, "type") == "primary") { uri = u; break; }
+            if (uri.empty()) uri = u;
+        }
+        a.cover_url = uri;
+    }
+    if (r.contains("labels") && r["labels"].is_array() && !r["labels"].empty()) {
+        a.label     = jstr(r["labels"][0], "name");
+        a.catalogno = jstr(r["labels"][0], "catno");
+    }
+    // Barcode aus identifiers[] (type == "Barcode"), Leerzeichen strippen.
+    if (r.contains("identifiers") && r["identifiers"].is_array())
+        for (const auto& idn : r["identifiers"])
+            if (jstr(idn, "type") == "Barcode") {
+                std::string bc;
+                for (char ch : jstr(idn, "value"))
+                    if (!std::isspace((unsigned char)ch)) bc += ch;
+                a.barcode = bc;
+                break;
+            }
+    // tracklist → nur echte Tracks (type_=="track" oder ohne type_),
+    // fortlaufend nummeriert (Discogs-Positionen können "A1"/"1" etc. sein).
+    if (r.contains("tracklist") && r["tracklist"].is_array()) {
+        int n = 0;
+        for (const auto& t : r["tracklist"]) {
+            std::string ty = jstr(t, "type_");
+            if (!ty.empty() && ty != "track") continue;   // Überschrift/Index
+            std::string title = trim(jstr(t, "title"));
+            if (title.empty()) continue;
+            Track tr;
+            tr.number = ++n;
+            tr.title  = title;
+            std::string ta = t.contains("artists")
+                ? discogs_join_artists(t["artists"]) : std::string();
+            tr.artist = ta.empty() ? a.artist : ta;
+            a.tracks.push_back(std::move(tr));
+        }
+    }
+    if (a.tracks.empty()) return std::nullopt;
+    return a;
 }
 
 std::optional<Album> mb_release_by_id(const std::string& mbid, int want_tracks,
@@ -1650,6 +1888,69 @@ std::optional<Album> mb_release_by_id(const std::string& mbid, int want_tracks,
     const json* m = medium_by_tracks(r, want_tracks);
     if (!m) return std::nullopt;
     return parse_release(r, *m);
+}
+
+// MusicBrainz verlinkt Releases per url-rel „discogs" auf ihr Discogs-Pendant.
+// Numerische Release-ID aus …/release/<id>[-slug] ziehen (Master-Links ignorieren).
+static std::string discogs_id_from_mb_relations(const json& r) {
+    if (!r.contains("relations") || !r["relations"].is_array()) return "";
+    for (const auto& rel : r["relations"]) {
+        if (jstr(rel, "type") != "discogs" || !rel.contains("url")) continue;
+        std::string url = jstr(rel["url"], "resource");
+        auto p = url.find("/release/");
+        if (p == std::string::npos) continue;
+        std::string id;
+        for (size_t i = p + 9; i < url.size() &&
+             std::isdigit((unsigned char)url[i]); ++i) id += url[i];
+        if (!id.empty()) return id;
+    }
+    return "";
+}
+// Nur LÜCKEN aus dem Discogs-Release füllen — MB bleibt der Anker (Cover,
+// Track-IDs, Titel). Discogs ergänzt v. a. Genres/Styles, Label, Katalognr.,
+// Barcode, Land, Datum und fehlende Per-Track-Artists (V.A.-Discs).
+static void merge_gaps_from_discogs(Album& a, const Album& d) {
+    if (a.genres.empty())    a.genres    = d.genres;
+    if (a.label.empty())     a.label     = d.label;
+    if (a.catalogno.empty()) a.catalogno = d.catalogno;
+    if (a.barcode.empty())   a.barcode   = d.barcode;
+    if (a.country.empty())   a.country   = d.country;
+    if (a.date.empty())      a.date      = d.date;
+    if (a.tracks.size() == d.tracks.size())
+        for (size_t i = 0; i < a.tracks.size(); ++i) {
+            if (a.tracks[i].title.empty()  && !d.tracks[i].title.empty())
+                a.tracks[i].title  = d.tracks[i].title;
+            if (a.tracks[i].artist.empty() && !d.tracks[i].artist.empty())
+                a.tracks[i].artist = d.tracks[i].artist;
+        }
+}
+
+std::optional<Album> mb_release_enriched(const std::string& mbid, int want_tracks,
+                                         const std::string& discogs_token,
+                                         const std::string& ua) {
+    if (mbid.empty()) return std::nullopt;
+    long code = 0;
+    // Wie mb_release_by_id, aber zusätzlich url-rels (für den Discogs-Link).
+    auto body = http_get("https://musicbrainz.org/ws/2/release/" + mbid +
+        "?fmt=json&inc=recordings+artist-credits+genres+labels+"
+        "release-groups+url-rels", ua, code);
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    if (!body || code != 200) return std::nullopt;
+    json r;
+    try { r = json::parse(*body); } catch (...) { return std::nullopt; }
+    const json* m = medium_by_tracks(r, want_tracks);
+    if (!m) return std::nullopt;
+    auto pa = parse_release(r, *m);
+    if (!pa) return std::nullopt;
+    Album a = std::move(*pa);
+    // Lücken aus dem verlinkten Discogs-Release füllen (nur mit Token + Link).
+    if (!discogs_token.empty()) {
+        std::string did = discogs_id_from_mb_relations(r);
+        if (!did.empty())
+            if (auto d = discogs_release_by_id(did, discogs_token, ua))
+                merge_gaps_from_discogs(a, *d);
+    }
+    return a;
 }
 
 // ── AcoustID / Chromaprint (Erkennung am Klang) ────────────────────────────────
@@ -2262,6 +2563,10 @@ std::vector<std::vector<uint32_t>> ar_db_crcs(const ArIds& ids,
 // ── Laufwerks-Identität & Offset-Store ─────────────────────────────────────────
 
 HwInfo drive_hwinfo(const std::string& device) {
+    // libcdio ist nicht thread-safe: „Alle scannen" ruft drive_id→drive_hwinfo
+    // (hier) parallel zu cdtext_lookup/discid_read_tolerant → unsynchronisierter
+    // globaler Treiber-State → Heap-Korruption. Gleicher Lock wie dort.
+    std::lock_guard<std::mutex> lk(g_optical_mtx);
     HwInfo h;
     CdIo_t* c = cdio_open(device.c_str(), DRIVER_UNKNOWN);
     if (!c) return h;
@@ -2277,13 +2582,48 @@ HwInfo drive_hwinfo(const std::string& device) {
 }
 
 std::vector<std::string> list_optical_devices() {
+    // Wie drive_hwinfo: cdio_get_devices greift in denselben nicht-thread-
+    // safen libcdio-Zustand. Serialisieren gegen parallele Scans/Lookups.
+    std::lock_guard<std::mutex> lk(g_optical_mtx);
     std::vector<std::string> v;
+#if defined(__linux__)
+    // libcdio liefert Symlinks bevorzugt (/dev/cdrom statt /dev/sr0) und
+    // hat je nach Version/Umgebung Lücken bei USB-Bridges. Deshalb:
+    // cdio-Liste + /dev/sr*-Glob vereinigen, alles per realpath auf den
+    // echten Geräteknoten kanonisieren und darüber deduplizieren — die GUI
+    // zeigt dann konsistent /dev/srN und jedes physische Laufwerk genau 1x.
+    std::vector<std::string> seen;
+    auto push_canonical = [&](const std::string& p) {
+        std::error_code ec;
+        fs::path real = fs::canonical(p, ec);
+        const std::string key = ec ? p : real.string();
+        if (std::find(seen.begin(), seen.end(), key) == seen.end()) {
+            seen.push_back(key);
+            v.push_back(key);
+        }
+    };
+    char** d = cdio_get_devices(DRIVER_DEVICE);
+    if (d) {
+        for (int i = 0; d[i]; ++i)
+            if (d[i][0]) push_canonical(d[i]);
+        cdio_free_device_list(d);
+    }
+    // sr-Knoten existieren nur für tatsächlich angeschlossene Laufwerke —
+    // Existenz reicht, keine ioctl-Probe nötig (die macht cdio_open später).
+    for (int i = 0; i < 32; ++i) {
+        const std::string p = "/dev/sr" + std::to_string(i);
+        std::error_code ec;
+        if (fs::exists(p, ec)) push_canonical(p);
+    }
+    std::sort(v.begin(), v.end());
+#else
     char** d = cdio_get_devices(DRIVER_DEVICE);
     if (d) {
         for (int i = 0; d[i]; ++i)
             if (d[i][0]) v.push_back(d[i]);
         cdio_free_device_list(d);
     }
+#endif
     return v;
 }
 
@@ -2349,6 +2689,91 @@ std::vector<DriveOffset> list_drive_offsets() {
     for (const auto& kv : load_offsets())
         v.push_back({ kv.first, kv.second });
     return v;
+}
+
+// ── Offset-Sweep aus geripten WAVs (Auto-Kalibrierung) ─────────────────────
+namespace {
+// PCM-Samples einer WAV (44 Byte Header überspringen) als uint32-Frames.
+std::vector<uint32_t> calib_load_wav(const fs::path& p) {
+    std::ifstream f(p, std::ios::binary);
+    std::vector<uint32_t> w;
+    if (!f) return w;
+    f.seekg(0, std::ios::end);
+    std::streamoff sz = f.tellg();
+    if (sz <= 44) return w;
+    f.seekg(44, std::ios::beg);
+    w.resize((size_t)((sz - 44) / 4));
+    f.read(reinterpret_cast<char*>(w.data()), (std::streamsize)w.size() * 4);
+    return w;
+}
+// AccurateRip-v1-CRC eines Tracks bei gegebenem Sample-Offset (auf dem
+// bereits geladenen Sample-Puffer — schneller Sweep über viele Offsets).
+uint32_t calib_v1(const std::vector<uint32_t>& w, bool first, bool last, int off) {
+    const size_t trim = 5 * 588, nn = w.size();
+    size_t lo = first ? trim : 0;
+    size_t hi = (last && nn > trim) ? nn - trim : nn;
+    uint64_t a = 0;
+    for (size_t k = lo; k < hi; ++k) {
+        long s = (long)k + off;
+        uint32_t v = (s >= 0 && (size_t)s < nn) ? w[s] : 0u;
+        a += (uint32_t)(v * (uint32_t)(k + 1));
+    }
+    return (uint32_t)a;
+}
+bool calib_in(const std::vector<uint32_t>& v, uint32_t x) {
+    for (uint32_t e : v) if (e == x) return true;
+    return false;
+}
+}  // namespace
+
+std::optional<int> calibrate_offset_from_wavs(
+    const fs::path& dir, int n, const std::vector<int>& ar_offsets,
+    int leadout, const std::string& useragent, int& matched) {
+    matched = 0;
+    if (n < 1 || ar_offsets.empty()) return std::nullopt;
+    ArIds ids = ar_ids_from_toc(ar_offsets, leadout);
+    auto db = ar_db_crcs(ids, useragent);
+    bool any = false;
+    for (auto& v : db) if (!v.empty()) any = true;
+    if (!any) return std::nullopt;                 // Disc nicht in AccurateRip
+
+    // Repräsentant: größte vorhandene WAV unter den Mittel-Tracks (nicht
+    // erster/letzter, die tragen die AR-Randabschnitte) mit DB-Einträgen.
+    int rep = -1; std::uintmax_t repsz = 0;
+    for (int t = 1; t <= n; ++t) {
+        if (t == 1 || t == n) continue;
+        if (t - 1 >= (int)db.size() || db[t - 1].empty()) continue;
+        std::error_code ec;
+        std::uintmax_t sz = fs::file_size(dir / (std::to_string(t) + ".wav"), ec);
+        if (!ec && sz > repsz) { repsz = sz; rep = t; }
+    }
+    if (rep < 0) rep = (n >= 1 ? 1 : -1);
+    if (rep < 0) return std::nullopt;
+
+    auto buf = calib_load_wav(dir / (std::to_string(rep) + ".wav"));
+    if (buf.empty()) return std::nullopt;
+    std::vector<int> cands;
+    for (int off = -1500; off <= 1500; ++off)
+        if (calib_in(db[rep - 1], calib_v1(buf, rep == 1, rep == n, off)))
+            cands.push_back(off);
+    if (cands.empty()) return std::nullopt;
+
+    // Kandidaten über ALLE Tracks verifizieren, besten (meiste Treffer) wählen.
+    int best = cands[0], bestm = -1;
+    for (int off : cands) {
+        int m = 0;
+        for (int t = 1; t <= n; ++t) {
+            if (t - 1 >= (int)db.size() || db[t - 1].empty()) continue;
+            uint32_t c1 = 0, c2 = 0;
+            ar_crc_file(dir / (std::to_string(t) + ".wav"),
+                        t == 1, t == n, off, c1, c2);
+            if (calib_in(db[t - 1], c1) || calib_in(db[t - 1], c2)) ++m;
+        }
+        if (m > bestm) { bestm = m; best = off; }
+    }
+    if (bestm <= 0) return std::nullopt;
+    matched = bestm;
+    return best;
 }
 
 // ── Offset-Registry-Client (T5) ────────────────────────────────────────────────
@@ -2452,6 +2877,13 @@ long long fs_free_bytes(const std::string& path) {
 }
 
 static std::string log_dir() {
+#ifdef _WIN32
+    // %LOCALAPPDATA% (non-roaming) für Logs; /tmp existiert auf Windows nicht.
+    if (const char* a = std::getenv("LOCALAPPDATA"); a && *a)
+        return std::string(a) + "\\cdripper\\logs";
+    if (const char* a = std::getenv("APPDATA"); a && *a)
+        return std::string(a) + "\\cdripper\\logs";
+#endif
     if (const char* x = std::getenv("XDG_DATA_HOME"); x && *x)
         return std::string(x) + "/cdripper";
     if (const char* h = std::getenv("HOME"); h && *h)
@@ -2486,16 +2918,19 @@ void log_to_file(const std::string& line) {
 // ───────────────────────────── Drive (ioctl) ──────────────────────────────────
 
 Drive::Drive(const std::string& p) : path_(p) {
-#ifdef _WIN32
-    // Windows: kein POSIX-fd. Die Status-/Eject-Methoden (siehe #else-Zweig
-    // weiter unten) laufen komplett über libcdio anhand path_ — kein open()
-    // mit O_NONBLOCK (das gibt's auf MSVC nicht) und kein ioctl nötig.
-    fd_ = -1;
-#else
+#ifdef __linux__
+    // Nur Linux nutzt fd_ (raw_status/disc_ready/has_audio per ioctl).
     fd_ = ::open(p.c_str(), O_RDONLY | O_NONBLOCK);
     if (fd_ < 0)
         throw std::runtime_error("Kann Laufwerk nicht öffnen: " + p + " (" +
                                  std::strerror(errno) + ")");
+#else
+    // Windows UND macOS: die Status-/Eject-Methoden (siehe #else-Zweig weiter
+    // unten) laufen komplett über libcdio anhand path_ — kein POSIX-fd nötig.
+    // Auf Windows gäbe es O_NONBLOCK gar nicht; auf macOS mountet das OS
+    // Daten-CDs automatisch → ::open() auf dem Geräteknoten kann mit EBUSY
+    // scheitern und würde den Drive sonst fälschlich unbrauchbar machen.
+    fd_ = -1;
 #endif
 }
 Drive::~Drive() {
@@ -2510,17 +2945,42 @@ bool Drive::has_audio() const {
     int t = ::ioctl(fd_, CDROM_DISC_STATUS, 0);
     return t == CDS_AUDIO || t == CDS_MIXED;
 }
+// SCSI START STOP UNIT (0x1B) mit LoEj=1, Start=0 → Auswurf direkt auf
+// SCSI-Ebene. Nötig als Fallback für USB-Slim-Laufwerke, die auf das
+// generische CDROMEJECT-ioctl unzuverlässig reagieren (die beiden
+// HL-DT-ST-USB-Brenner an diesem PC gehörten dazu). Gibt true bei
+// erfolgreichem SCSI-Kommando.
+static bool scsi_start_stop_eject(int fd) {
+    unsigned char cdb[6]  = { 0x1B, 0, 0, 0, 0x02, 0 };   // LoEj=1, Start=0
+    unsigned char sense[32] = {0};
+    sg_io_hdr_t io{};
+    io.interface_id    = 'S';
+    io.dxfer_direction = SG_DXFER_NONE;
+    io.cmd_len         = sizeof(cdb);
+    io.cmdp            = cdb;
+    io.sbp             = sense;
+    io.mx_sb_len       = sizeof(sense);
+    io.timeout         = 15000;              // 15 s
+    if (::ioctl(fd, SG_IO, &io) < 0) return false;
+    // status 0 = GOOD; masked_status 0 ebenso. Sonst SCSI-Fehler.
+    return io.status == 0 && io.host_status == 0;
+}
+
 // Robustes Auswerfen: libcdio/paranoia sperrt während Rip/Scan die Klappe
 // (CDROM_LOCKDOOR) — ein hängengebliebener Lock lässt CDROMEJECT mit EBUSY
 // ins Leere laufen (Tray bleibt zu, scheinbar „passiert nichts"). Daher
-// erst ENTsperren, dann auswerfen, mit kurzer Retry-Schleife (das Laufwerk
-// braucht nach einem Lauf evtl. einen Moment, bis es das Kommando annimmt).
+// erst ENTsperren, dann auswerfen. Reihenfolge pro Runde: CDROMEJECT-ioctl,
+// bei Misserfolg der SCSI-START-STOP-Fallback (USB-Laufwerke). Großzügige
+// Retry-Schleife, weil das Laufwerk direkt nach einem Rip/Scan das Gerät
+// oft noch kurz belegt hält (EBUSY) und erst nach ein paar hundert ms frei
+// wird.
 static bool do_eject_fd(int fd) {
     ::ioctl(fd, CDROM_LOCKDOOR, 0);          // Klappe entriegeln (Lock weg)
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 8; ++i) {
         if (::ioctl(fd, CDROMEJECT, 0) == 0) return true;
-        ::usleep(400 * 1000);
-        ::ioctl(fd, CDROM_LOCKDOOR, 0);
+        if (scsi_start_stop_eject(fd))       return true;   // USB-Fallback
+        ::usleep(500 * 1000);
+        ::ioctl(fd, CDROM_LOCKDOOR, 0);      // Lock erneut lösen (falls neu)
     }
     return false;
 }
@@ -2585,14 +3045,32 @@ bool load_tray(const std::string& dev) {
 // ───────────────────────────── FLAC ───────────────────────────────────────────
 
 static int run(const std::vector<std::string>& argv) {
+    if (argv.empty()) return -1;
 #ifdef _WIN32
-    // _spawnvp(_P_WAIT, ...): Windows-CRT-Äquivalent von fork+execvp+
-    // waitpid, sucht im PATH. Argv-Strings müssen const char* sein.
-    std::vector<const char*> a;
-    for (const auto& s : argv) a.push_back(s.c_str());
-    a.push_back(nullptr);
-    intptr_t rc = ::_spawnvp(_P_WAIT, a[0], a.data());
-    return (int)rc;
+    // Früher _spawnvp — das quotet Argumente NICHT: ein Pfad mit Leerzeichen
+    // („The Wall (1979)/01.flac") wird beim Kind in mehrere argv zerlegt →
+    // jeder Encode/Upload scheitert. Stattdessen CreateProcessW mit einer
+    // sauber gequoteten Kommandozeile (ws_quote_arg, wie WorkerSession).
+    // lpApplicationName = nullptr ⇒ das erste Token (Tool-Name, garantiert
+    // leerzeichenfrei) wird in App-Dir + CWD + PATH gesucht — findet damit
+    // auch die neben der EXE gebündelten flac.exe/metaflac.exe (MSI).
+    std::string cmd;
+    for (size_t i = 0; i < argv.size(); ++i) {
+        if (i) cmd += ' ';
+        cmd += ws_quote_arg(argv[i]);
+    }
+    std::wstring wcmd = ws_to_wide(cmd);
+    std::vector<wchar_t> cmdbuf(wcmd.begin(), wcmd.end());
+    cmdbuf.push_back(L'\0');                    // CreateProcessW braucht mutable Buffer
+    STARTUPINFOW si{}; si.cb = sizeof si;
+    PROCESS_INFORMATION pi{};
+    if (!::CreateProcessW(nullptr, cmdbuf.data(), nullptr, nullptr, FALSE,
+                          CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+        return -1;
+    ::WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD ec = 0; ::GetExitCodeProcess(pi.hProcess, &ec);
+    ::CloseHandle(pi.hThread); ::CloseHandle(pi.hProcess);
+    return (int)ec;
 #else
     std::vector<char*> a;
     for (const auto& s : argv) a.push_back(const_cast<char*>(s.c_str()));
@@ -2604,6 +3082,20 @@ static int run(const std::vector<std::string>& argv) {
     waitpid(pid, &st, 0);
     return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
 #endif
+}
+
+bool embed_flac_lyrics(const fs::path& flac, const fs::path& lrc) {
+    // Ein einziger metaflac-Aufruf: Operationen greifen in Reihenfolge, also
+    // erst das alte LYRICS-Tag entfernen, dann neu setzen. --no-utf8-convert
+    // schreibt die (bereits UTF-8-)LRC verbatim; ohne das Flag interpretiert
+    // metaflac die Bytes im lokalen Charset (im Flatpak/C-Locale) und macht
+    // Umlaute zu ####. run() → argv (kein Shell): keine Injection, korrektes
+    // Quoting, und CreateProcessW findet metaflac auch neben der EXE.
+    return run({ "metaflac",
+                 "--remove-tag=LYRICS",
+                 "--no-utf8-convert",
+                 "--set-tag-from-file=LYRICS=" + lrc.string(),
+                 flac.string() }) == 0;
 }
 
 // Gemeinsamer Tag-Satz (Vorbis-Comment-Stil KEY=VALUE) für FLAC & Opus.
@@ -2749,55 +3241,162 @@ static std::string url_for(const std::string& base, CURL* c,
     return u;
 }
 
-static long mkcol(const Config& cfg, const std::string& url) {
-    CURL* c = curl_easy_init();
-    curl_easy_setopt(c, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(c, CURLOPT_CUSTOMREQUEST, "MKCOL");
-    curl_easy_setopt(c, CURLOPT_USERPWD, (cfg.webdav_user + ":" + cfg.webdav_pass).c_str());
-    curl_easy_setopt(c, CURLOPT_HTTPAUTH, (long)CURLAUTH_BASIC);
-    curl_easy_setopt(c, CURLOPT_TIMEOUT, 30L);
-    curl_easy_perform(c);
-    long code = 0;
-    curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code);
-    curl_easy_cleanup(c);
-    return code;
+// ── Prozessweite WebDAV-Drossel gegen HTTP 429 ─────────────────────────────
+// Beim Parallel-Rip (3 Laufwerke) überfuhren die gleichzeitigen MKCOL/PUTs
+// Nextcloud/Traefik → 429 (Too Many Requests) → jeder Track scheiterte.
+// Zwei Maßnahmen greifen ineinander:
+//  1) Ein globales Gate serialisiert alle WebDAV-Requests und hält einen
+//     kleinen Mindestabstand ein — die Rips laufen weiter parallel, nur die
+//     HTTP-Aufrufe reihen sich. Bei kleinen Audiodateien ist das unkritisch,
+//     der Flaschenhals bleibt das Lesen der CD.
+//  2) 429 wird als Rückstau erkannt (nicht als harter Fehler): der
+//     Retry-After-Header (bzw. exponentielles Backoff) bestimmt die Pause,
+//     bis zu mehreren Minuten. Nach dem Backoff wird derselbe Request neu
+//     versucht, statt den Track zu verlieren.
+std::mutex          WebDav::dir_mu_;
+std::set<std::string> WebDav::dirs_made_;
+
+namespace {
+std::mutex           g_dav_gate;         // serialisiert WebDAV-Requests
+double               g_dav_last = 0;     // Monotonic-Sekunden des letzten Req.
+constexpr double     kDavMinGap = 0.15;  // Mindestabstand zwischen Requests
+
+double dav_now_s() {
+    using namespace std::chrono;
+    return duration<double>(steady_clock::now().time_since_epoch()).count();
 }
 
+// Header-Callback: fängt "Retry-After: <sekunden|http-date>" ein.
+size_t dav_hdr_cb(char* b, size_t sz, size_t n, void* ud) {
+    size_t len = sz * n;
+    std::string line(b, len);
+    std::string lc = line;
+    for (char& ch : lc) ch = (char)std::tolower((unsigned char)ch);
+    if (lc.rfind("retry-after:", 0) == 0) {
+        std::string v = trim(line.substr(12));
+        // Nur der numerische Sekunden-Fall (Nextcloud/Traefik liefern das);
+        // HTTP-Date ignorieren wir und fallen aufs Backoff zurück.
+        char* end = nullptr;
+        long s = std::strtol(v.c_str(), &end, 10);
+        if (end != v.c_str() && s > 0) *static_cast<int*>(ud) = (int)s;
+    }
+    return len;
+}
+
+// Führt eine curl-Operation unter dem Gate aus, mit 429-Backoff. setup()
+// konfiguriert das (frische) easy-handle; liefert den HTTP-Code zurück oder
+// wirft bei endgültigem Fehlschlag. accept() entscheidet, welche Codes ok
+// sind (MKCOL toleriert 405/301, PUT will 2xx).
+long dav_request(const Config& cfg, const char* what,
+                 const std::function<void(CURL*)>& setup,
+                 const std::function<bool(long)>& accept) {
+    const int max_attempts = 8;          // deckt mehrere Backoff-Runden ab
+    double backoff = 1.0;
+    for (int att = 1; ; ++att) {
+        int retry_after = 0;
+        long code = 0; CURLcode rc = CURLE_OK;
+        {
+            // Das Gate serialisiert nur den START (Mindestabstand kDavMinGap
+            // gegen Nextcloud-Rate-Limits), NICHT den Transfer. Früher lief das
+            // ganze curl_easy_perform unter dem Lock → ein großer/hängender
+            // Upload (bis 600 s Timeout) blockierte jeden MKCOL/PUT/exists aller
+            // anderen Laufwerke. Jetzt: Slot reservieren, Gate frei, dann
+            // parallel übertragen (jeder Thread hat sein eigenes easy-handle —
+            // libcurl ist so thread-safe).
+            std::lock_guard<std::mutex> lk(g_dav_gate);
+            double wait = kDavMinGap - (dav_now_s() - g_dav_last);
+            if (wait > 0)
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds((int)(wait * 1000)));
+            g_dav_last = dav_now_s();     // Start-Slot dieses Requests reservieren
+        }
+        CURL* c = curl_easy_init();
+        setup(c);
+        curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, dav_hdr_cb);
+        curl_easy_setopt(c, CURLOPT_HEADERDATA, &retry_after);
+        curl_easy_setopt(c, CURLOPT_USERPWD,
+            (cfg.webdav_user + ":" + cfg.webdav_pass).c_str());
+        curl_easy_setopt(c, CURLOPT_HTTPAUTH, (long)CURLAUTH_BASIC);
+        rc = curl_easy_perform(c);
+        curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code);
+        curl_easy_cleanup(c);
+        if (rc == CURLE_OK && code == 429) {         // Rate-Limit → warten
+            if (att >= max_attempts)
+                throw std::runtime_error(std::string(what) +
+                    " HTTP 429 (Rate-Limit, nach " +
+                    std::to_string(att) + " Versuchen aufgegeben)");
+            double pause = retry_after > 0 ? (double)retry_after
+                                           : std::min(backoff, 60.0);
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds((int)(pause * 1000)));
+            backoff *= 2;
+            continue;
+        }
+        if (rc == CURLE_OK && accept(code)) return code;
+        // Anderer transienter Netzfehler → kurzes Backoff, dann neu.
+        if (att < max_attempts &&
+            (rc != CURLE_OK || code == 0 || code >= 500)) {
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds((int)(std::min(backoff, 30.0) * 1000)));
+            backoff *= 2;
+            continue;
+        }
+        throw std::runtime_error(std::string(what) + " HTTP " +
+            std::to_string(code) + " (" + curl_easy_strerror(rc) + ")");
+    }
+}
+}  // namespace
+
 void WebDav::ensure_dirs(const std::vector<std::string>& segs) {
-    CURL* c = curl_easy_init();
+    CURL* uc = curl_easy_init();
     std::vector<std::string> acc;
     for (const auto& s : segs) {
         acc.push_back(s);
-        long code = mkcol(cfg_, url_for(base_, c, acc));
-        if (code != 201 && code != 405 && code != 301)
-            throw std::runtime_error("MKCOL '" + s + "' HTTP " + std::to_string(code));
+        const std::string url = url_for(base_, uc, acc);
+        {   // Schon (von irgendeinem Laufwerk) angelegt? Dann kein MKCOL.
+            std::lock_guard<std::mutex> lk(dir_mu_);
+            if (dirs_made_.count(url)) continue;
+        }
+        dav_request(cfg_, "MKCOL",
+            [&](CURL* c) {
+                curl_easy_setopt(c, CURLOPT_URL, url.c_str());
+                curl_easy_setopt(c, CURLOPT_CUSTOMREQUEST, "MKCOL");
+                curl_easy_setopt(c, CURLOPT_TIMEOUT, 30L);
+            },
+            // 201 neu, 405 existiert schon, 301 Redirect → alle „ok".
+            [](long code) { return code == 201 || code == 405 ||
+                                   code == 301; });
+        std::lock_guard<std::mutex> lk(dir_mu_);
+        dirs_made_.insert(url);
     }
-    curl_easy_cleanup(c);
+    curl_easy_cleanup(uc);
 }
 
 void WebDav::put(const fs::path& local, const std::vector<std::string>& segs) {
-    CURL* c = curl_easy_init();
-    std::string url = url_for(base_, c, segs);
-    FILE* fp = fopen_path(local, "rb");
-    if (!fp) { curl_easy_cleanup(c);
-               throw std::runtime_error("PUT: lokal nicht lesbar: " + local.string()); }
+    CURL* uc = curl_easy_init();
+    std::string url = url_for(base_, uc, segs);
+    curl_easy_cleanup(uc);
     std::error_code ec;
     auto sz = (curl_off_t)fs::file_size(local, ec);
-    curl_easy_setopt(c, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(c, CURLOPT_UPLOAD, 1L);
-    curl_easy_setopt(c, CURLOPT_READDATA, fp);
-    curl_easy_setopt(c, CURLOPT_INFILESIZE_LARGE, sz);
-    curl_easy_setopt(c, CURLOPT_USERPWD, (cfg_.webdav_user + ":" + cfg_.webdav_pass).c_str());
-    curl_easy_setopt(c, CURLOPT_HTTPAUTH, (long)CURLAUTH_BASIC);
-    curl_easy_setopt(c, CURLOPT_TIMEOUT, 600L);
-    CURLcode rc = curl_easy_perform(c);
-    long code = 0;
-    curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code);
+    FILE* fp = fopen_path(local, "rb");
+    if (!fp) throw std::runtime_error(
+        "PUT: lokal nicht lesbar: " + local.string());
+    try {
+        dav_request(cfg_, "PUT",
+            [&](CURL* c) {
+                // Bei jedem Retry-Versuch an den Dateianfang zurück —
+                // dasselbe FILE* wird wiederverwendet, Backoff setzt den
+                // Read-Offset sonst nicht zurück.
+                std::rewind(fp);
+                curl_easy_setopt(c, CURLOPT_URL, url.c_str());
+                curl_easy_setopt(c, CURLOPT_UPLOAD, 1L);
+                curl_easy_setopt(c, CURLOPT_READDATA, fp);
+                curl_easy_setopt(c, CURLOPT_INFILESIZE_LARGE, sz);
+                curl_easy_setopt(c, CURLOPT_TIMEOUT, 600L);
+            },
+            [](long code) { return code >= 200 && code < 300; });
+    } catch (...) { std::fclose(fp); throw; }
     std::fclose(fp);
-    curl_easy_cleanup(c);
-    if (rc != CURLE_OK || code < 200 || code >= 300)
-        throw std::runtime_error("PUT HTTP " + std::to_string(code) + " (" +
-                                 curl_easy_strerror(rc) + ")");
 }
 
 bool WebDav::exists(const std::vector<std::string>& segs) {

@@ -5,8 +5,10 @@
 
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <thread>
 
+#include <QColor>
 #include <QDialog>
 #include <QMainWindow>
 #include <QMap>
@@ -14,6 +16,7 @@
 #include <QString>
 #include <QStringList>
 
+class QGraphicsDropShadowEffect;
 class QTableWidget;
 class QLabel;
 class QPushButton;
@@ -25,6 +28,7 @@ class QComboBox;
 class QSpinBox;
 class QStackedWidget;
 class QSystemTrayIcon;
+class RipProgressDelegate;   // in gui.cpp definiert (fancy Fortschrittsbalken)
 class QCloseEvent;
 class MultiWindow;                 // T7-GUI: Multi-Laufwerk-Fenster
 
@@ -39,6 +43,10 @@ public:
     void start(const cdr::Config& cfg, bool once);
     void requestStop();
     bool running() const { return running_.load(); }
+    // Bei aktiver manueller Metadaten-Wahl den MusicBrainz-„Release wählen"-
+    // Dialog unterdrücken (die Pipeline nimmt dann stumm den Default; die Tags
+    // kommen ohnehin aus der manuellen Wahl per editAlbum/editTrackTitle).
+    void setSuppressChooser(bool b) { suppressChooser_ = b; }
     // Scan-geführter Rip: liefert für eine Disc-ID die zuletzt zu
     // rippenden (Hänger-)Tracks. Von MainWindow gesetzt; nur ein
     // frischer Session-Scan derselben Disc liefert hier etwas.
@@ -81,6 +89,7 @@ private:
     std::unique_ptr<cdr::Pipeline> pl_;
     std::thread          worker_;
     std::atomic<bool>    stop_{false};
+    std::atomic<bool>    suppressChooser_{false};
     std::atomic<bool>    running_{false};
 };
 
@@ -130,6 +139,9 @@ protected:
     void showEvent(QShowEvent* e) override;                // WS_THICKFRAME anwenden
     bool winFrameApplied_ = false;
 #endif
+#if !defined(Q_OS_WIN) && !defined(Q_OS_MACOS)
+    bool event(QEvent* ev) override;                       // randloses Kanten-Resize
+#endif
 
 private:
     void setControlsRunning(bool r);
@@ -143,6 +155,12 @@ private:
     std::atomic<bool> previewBusy_{false};
     std::atomic<bool> scanBusy_{false};          // Standalone-Scan aktiv
     std::string lastDiscId_;
+    // Manuell (per Metadaten-Suche) gewählte Metadaten. Haben Vorrang vor der
+    // Auto-Erkennung und überleben den Rip-Start (sonst würde die frische
+    // Erkennung die Korrektur überschreiben). Nur für die GLEICHE Disc gültig.
+    std::optional<cdr::Album> manualAlbum_;
+    std::string manualDiscId_;
+    QString     manualCoverPath_;
     int discPoll_ = 0;
     std::string scanDiscId_;                     // Disc des letzten Scans
     std::vector<int> scanTrackStatus_;           // voller Pro-Track-Status
@@ -172,6 +190,10 @@ private:
     QSystemTrayIcon* tray_ = nullptr;
     QList<QStringList> history_;   // {Zeit, Album, Status, AccurateRip}
     QLabel*     cover_;
+    QWidget*    mainFx_ = nullptr;              // animierter Hintergrund
+    QGraphicsDropShadowEffect* coverGlow_ = nullptr;  // atmender Cover-Glow
+    QColor      coverAccent_{0x29, 0x79, 0xff};        // Glow-Farbe aus Cover
+    int         mainAnimPhase_ = 0;
     QPushButton* coverBtn_;
     QPushButton* coverMbBtn_;
     QString     curReleaseId_;
@@ -180,6 +202,7 @@ private:
     QLineEdit*  albYear_;
     QLabel*     bannerLbl_;
     QTableWidget* table_;
+    RipProgressDelegate* progressDelegate_ = nullptr;  // fancy %-Balken
     QPlainTextEdit* logView_;
 
     QLabel* sbElapsed_;
@@ -225,7 +248,8 @@ private:
     QString     cfgPath_;
     QLabel*     help_ = nullptr;              // Erklärungs-Kasten unten
     QMap<QObject*, QString> helpText_;
-    QLineEdit *device_, *tmpdir_, *ua_, *musicRoot_, *acoustidKey_;
+    QLineEdit *tmpdir_, *ua_, *musicRoot_, *acoustidKey_, *discogsToken_;
+    QComboBox *device_;          // erkannte Laufwerke (Kalibrier-Auswahl)
     QComboBox *readSpeed_;
     QComboBox *scanDensity_;
     QSpinBox  *recoveryBudget_;   // Recovery-Zeitbudget pro Track (Min)
@@ -236,6 +260,7 @@ private:
     QCheckBox *preflight_;
     QCheckBox *accuraterip_;
     QSpinBox  *readOffset_;
+    QComboBox *calibDev_;        // Laufwerk-Auswahl fürs Kalibrieren (AR-Tab)
     QLabel    *driveLbl_;
     QPushButton* calibrateBtn_;
     QTableWidget* driveTbl_;

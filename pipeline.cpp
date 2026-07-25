@@ -149,9 +149,24 @@ void Pipeline::run(const std::atomic<bool>& stop, bool once) {
             if (cb_.onLog) cb_.onLog(std::string("Fehler: ") + e.what());
         }
         if (cfg_.auto_eject) {
-            if (cb_.onLog) cb_.onLog("Werfe CD aus.");
-            eject_device(cfg_.device);   // frisch + robust (Lock+Retry),
-        }                                // nicht über den alten drv-fd
+            if (cb_.onLog) cb_.onLog("Werfe CD aus …");
+            bool ejected = eject_device(cfg_.device);   // ioctl + SCSI-Fallback
+            // Ergebnis verifizieren: ist nach dem Auswurf keine Disc mehr
+            // lesbar, ist sie sicher entnehmbar — sonst Klartext-Hinweis,
+            // dass von Hand nachgeholfen werden muss (USB-Slim-Laufwerke
+            // öffnen das Fach nicht immer selbst).
+            bool gone = false;
+            for (int i = 0; i < 6 && !gone; ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                try { Drive d(cfg_.device); gone = !d.disc_ready(); }
+                catch (...) { gone = true; }   // Fach offen → open scheitert
+            }
+            if (cb_.onLog)
+                cb_.onLog((ejected || gone)
+                    ? "CD ausgeworfen — kann sicher entnommen werden."
+                    : "Auswurf reagierte nicht — bitte das Laufwerksfach von "
+                      "Hand öffnen und die CD entnehmen.");
+        }
         if (once) break;
     }
 }
@@ -349,12 +364,18 @@ void Pipeline::process_disc(Drive& drv, const std::atomic<bool>& stop,
             ar_offset = *o; ar_calibrated = true; ar_from_registry = true;
         }
     }
+    // Auto-Kalibrierung: ist das Laufwerk weder lokal noch über die Registry
+    // kalibriert, behalten wir die WAVs dieses regulären Rips und ermitteln
+    // daraus nach dem Rip den Drive-Offset (Sweep gegen AccurateRip) — kein
+    // separater Kalibrier-Durchlauf nötig. Greift genau einmal: sobald der
+    // Offset gespeichert ist, ist das Laufwerk beim nächsten Rip kalibriert.
+    const bool need_calib = cfg_.accuraterip && !ar_calibrated;
     if (cfg_.accuraterip && cb_.onLog)
         cb_.onLog("AccurateRip-Laufwerk: \"" + ar_drive + "\" — Offset " +
                   std::to_string(ar_offset) +
                   (ar_from_registry ? " (Registry-Konsens)."
                    : ar_calibrated  ? " (kalibriert)."
-                   : " (NICHT kalibriert — Settings → Kalibrieren)."));
+                   : " (nicht kalibriert — ermittle Offset aus diesem Rip)."));
 
     // Album initial aus den Metadaten; die Track-Liste wird an die echte
     // TOC-Anzahl angeglichen, sobald der Worker die TOC gemeldet hat.
@@ -363,8 +384,19 @@ void Pipeline::process_disc(Drive& drv, const std::atomic<bool>& stop,
         album_ = *a;
     }
     Album snap = album_copy();
+    // Multi-Drive: jedes Laufwerk braucht ein EIGENES Work-Dir. Sonst teilen
+    // sich zwei Laufwerke mit gleichem „Artist - Titel" (zwei unbekannte
+    // Discs → beide Platzhalter mit identischem Namen; oder zwei Kopien
+    // derselben Pressung) exakt dasselbe Verzeichnis → das remove_all/die
+    // Track-Dateien des einen zerstören die des anderen. Der Geräteknoten
+    // im Pfad macht ihn eindeutig.
+    std::string devtag = cfg_.device;
+    if (auto sl = devtag.find_last_of("/\\"); sl != std::string::npos)
+        devtag = devtag.substr(sl + 1);
+    if (devtag.empty()) devtag = "drive";
     fs::path work = fs::path(cfg_.tmpdir) /
-                    sanitize(snap.artist + " - " + snap.title);
+                    (sanitize(devtag) + "__" +
+                     sanitize(snap.artist + " - " + snap.title));
     std::error_code ec;
     fs::remove_all(work, ec);
     fs::create_directories(work, ec);
@@ -405,6 +437,12 @@ void Pipeline::process_disc(Drive& drv, const std::atomic<bool>& stop,
         while (auto idx = enc_q.pop()) {
             if (stop.load()) continue;
             Album al = album_copy();           // Live-Edits greifen hier
+            if (*idx < 1 || *idx > (int)al.tracks.size()) {
+                ++failed;                       // Index außerhalb TOC → UB-Schutz
+                if (cb_.onLog) cb_.onLog("Encode: Track-Index " +
+                    std::to_string(*idx) + " außerhalb der TOC — übersprungen.");
+                continue;
+            }
             const Track& tr = al.tracks[*idx - 1];
             if (cb_.onTrack) cb_.onTrack(*idx, TrackState::Encoding, 0, "");
             try {
@@ -440,35 +478,11 @@ void Pipeline::process_disc(Drive& drv, const std::atomic<bool>& stop,
                         // eingebettete Vorbis-`LYRICS`-Tags. Synced LRC mit
                         // [mm:ss.xx]-Timestamps wird automatisch als synced
                         // erkannt. Nur FLAC (Default); MP3/Opus später bei
-                        // Bedarf analog.
-                        // metaflac läuft über die Shell (std::system). Quoting
-                        // plattformabhängig: POSIX 'single' + ';' (beide laufen)
-                        // + 2>/dev/null; Windows "double" + '&' (cmd-Sequenz) +
-                        // 2>NUL. Beide Pfade sind von uns erzeugte Staging-/
-                        // Sidecar-Dateien (numerisch, kontrolliertes Tmp-Dir),
-                        // aber zur Sicherheit nur einbetten, wenn KEIN Shell-
-                        // Metazeichen im Pfad steht — sonst best-effort skip
-                        // (kein system()-Aufruf mit zerbrochenem Kommando).
-                        auto shell_safe = [](const std::string& s) {
-                            return s.find_first_of("\"'`$&|;<>(){}[]^%!*?~\r\n")
-                                   == std::string::npos;
-                        };
-                        if (enc.extension() == ".flac" &&
-                            shell_safe(enc.string()) && shell_safe(lrcp.string())) {
-#ifdef _WIN32
-                            std::string cmd =
-                                "metaflac --remove-tag=LYRICS \"" +
-                                enc.string() + "\" 2>NUL & "
-                                "metaflac --set-tag-from-file=LYRICS=\"" +
-                                lrcp.string() + "\" \"" + enc.string() + "\"";
-#else
-                            std::string cmd =
-                                "metaflac --remove-tag=LYRICS '" +
-                                enc.string() + "' 2>/dev/null; "
-                                "metaflac --set-tag-from-file=LYRICS='" +
-                                lrcp.string() + "' '" + enc.string() + "'";
-#endif
-                            if (std::system(cmd.c_str()) != 0 && cb_.onLog)
+                        // Bedarf analog. Einbetten via engine::embed_flac_lyrics
+                        // (metaflac über argv-Runner — kein Shell, daher kein
+                        // Quoting-/Injection-Problem und portabel auf Win/mac).
+                        if (enc.extension() == ".flac") {
+                            if (!embed_flac_lyrics(enc, lrcp) && cb_.onLog)
                                 cb_.onLog("Track " + std::to_string(*idx) +
                                     ": LYRICS-Tag einbetten fehlgeschlagen "
                                     "(metaflac).");
@@ -476,7 +490,8 @@ void Pipeline::process_disc(Drive& drv, const std::atomic<bool>& stop,
                     }
                 }
                 std::error_code e;
-                fs::remove(wav, e);
+                if (!need_calib) fs::remove(wav, e);   // sonst: für Offset-
+                                                       // Sweep aufheben (s.u.)
                 up_q.push(*idx);
             } catch (const std::exception& e) {
                 ++failed;
@@ -538,6 +553,12 @@ void Pipeline::process_disc(Drive& drv, const std::atomic<bool>& stop,
             if (stop.load()) continue;
             ensure_segs();
             Album al = album_copy();
+            if (*idx < 1 || *idx > (int)al.tracks.size()) {
+                ++failed;                       // Index außerhalb TOC → UB-Schutz
+                if (cb_.onLog) cb_.onLog("Upload: Track-Index " +
+                    std::to_string(*idx) + " außerhalb der TOC — übersprungen.");
+                continue;
+            }
             const Track& tr = al.tracks[*idx - 1];
             // Box-Set: Disc-Präfix vermeidet Dateinamen-Kollision (Disc1 01
             // vs Disc2 01) im selben Albumordner.
@@ -612,6 +633,23 @@ void Pipeline::process_disc(Drive& drv, const std::atomic<bool>& stop,
             }
         }
     });
+
+    // RAII: schließt & joint enc_th/up_th auf JEDEM Pfad. Wirft irgendetwas
+    // zwischen hier und dem regulären join() unten (rip_session, serialize_plan,
+    // bad_alloc …), zerstört das Stack-Unwinding sonst noch joinbare
+    // std::thread-Objekte → std::terminate. Der Guard wird VOR up_th/enc_th
+    // zerstört (umgekehrte Deklarationsreihenfolge) und joint sie sauber.
+    // Idempotent: nach dem regulären join() sind die Threads nicht mehr
+    // joinable, close() ist ein No-op.
+    struct ThreadJoinGuard {
+        Stage& enc_q; Stage& up_q; std::thread& enc; std::thread& up;
+        ~ThreadJoinGuard() {
+            enc_q.close();
+            if (enc.joinable()) enc.join();   // enc_th schließt beim Ende up_q
+            up_q.close();
+            if (up.joinable())  up.join();
+        }
+    } thread_join_guard{enc_q, up_q, enc_th, up_th};
 
     // Pre-Rip-Existenz-Check (unten befüllt, vor rip_session): Tracks die
     // schon am Ziel liegen → gar nicht erst rippen (Plan-Code 's').
@@ -769,7 +807,13 @@ void Pipeline::process_disc(Drive& drv, const std::atomic<bool>& stop,
             }
         } else if (ln.rfind("RIPDONE ", 0) == 0) {
             int idx = 0; long bad = 0;
-            std::sscanf(ln.c_str(), "RIPDONE %d %ld", &idx, &bad);
+            // Parse-Guard: kaputte/verschränkte Worker-Zeile ⇒ idx bliebe 0,
+            // enc_q.push(0) → al.tracks[-1] weiter unten wäre UB. Ignorieren.
+            if (std::sscanf(ln.c_str(), "RIPDONE %d %ld", &idx, &bad) < 1 ||
+                idx < 1) {
+                if (cb_.onLog) cb_.onLog("Worker: kaputte RIPDONE-Zeile ignoriert.");
+                return;
+            }
             done_acc += nsec.count(idx) ? nsec[idx] : 0;
             sectors_done_ = done_acc;
             ++ripped_;
@@ -801,7 +845,11 @@ void Pipeline::process_disc(Drive& drv, const std::atomic<bool>& stop,
             enc_q.push(idx);
         } else if (ln.rfind("RIPERR ", 0) == 0) {
             int idx = 0; char msg[256] = { 0 };
-            std::sscanf(ln.c_str(), "RIPERR %d %255[^\n]", &idx, msg);
+            if (std::sscanf(ln.c_str(), "RIPERR %d %255[^\n]", &idx, msg) < 1 ||
+                idx < 1) {
+                if (cb_.onLog) cb_.onLog("Worker: kaputte RIPERR-Zeile ignoriert.");
+                return;
+            }
             ++failed;
             rip_settled.push_back(idx);          // erledigt (Fehler, kein Hang)
             rip_failed.push_back(idx);           // → persistent als defekt
@@ -998,6 +1046,34 @@ void Pipeline::process_disc(Drive& drv, const std::atomic<bool>& stop,
         }
     }
 
+    // Auto-Kalibrierung: aus den (bei need_calib aufgehobenen) WAVs den
+    // Drive-Offset gegen AccurateRip ermitteln und lokal speichern. Ab der
+    // nächsten CD ist das Laufwerk damit kalibriert; der dann bei korrektem
+    // Offset bestätigte Wert wird auch an die Registry gemeldet (der obige
+    // Submit verlangt ar_calibrated — das greift erst im Folge-Rip, damit
+    // nie ein ungeprüfter Offset in den Konsens wandert). Anschließend die
+    // nur fürs Sweepen aufgehobenen WAVs entfernen.
+    if (need_calib && !stop.load()) {
+        int nmatch = 0;
+        auto off = cdr::calibrate_offset_from_wavs(
+            work, n, ar_offs, ar_leadout, cfg_.mb_useragent, nmatch);
+        if (off && save_drive_offset(ar_drive, *off)) {
+            if (cb_.onLog)
+                cb_.onLog("Auto-Kalibrierung: Offset " + std::to_string(*off) +
+                          " ermittelt (" + std::to_string(nmatch) + "/" +
+                          std::to_string(n) + " Tracks gegen AccurateRip) und "
+                          "gespeichert — ab der nächsten CD aktiv.");
+        } else if (cb_.onLog) {
+            cb_.onLog("Auto-Kalibrierung nicht möglich (Disc nicht in "
+                      "AccurateRip oder kein eindeutiger Offset) — Laufwerk "
+                      "bleibt unkalibriert, wird bei der nächsten CD erneut "
+                      "versucht.");
+        }
+        std::error_code we;
+        for (int t = 1; t <= n; ++t)
+            fs::remove(work / (std::to_string(t) + ".wav"), we);
+    }
+
     // T5: bewiesen-korrekten Offset an die Registry zurückspielen. Nur wenn
     // (a) Opt-in, (b) lokal kalibriert (nicht selbst aus der Registry), und
     // (c) AccurateRip die Disc bei genau diesem Offset bestätigt hat — so
@@ -1026,8 +1102,16 @@ void Pipeline::process_disc(Drive& drv, const std::atomic<bool>& stop,
     if (!stop.load()) {
         try {
             std::time_t tt = std::time(nullptr);
-            char ts[32]; std::strftime(ts, sizeof ts, "%Y-%m-%d %H:%M:%S",
-                                       std::localtime(&tt));
+            // std::localtime gibt einen prozessweiten statischen tm zurück →
+            // im Multi-Drive-Lauf (mehrere Rip-Reports gleichzeitig) ein
+            // Data-Race. localtime_r/_s schreiben in unser lokales tm.
+            std::tm tmv{};
+#ifdef _WIN32
+            ::localtime_s(&tmv, &tt);
+#else
+            ::localtime_r(&tt, &tmv);
+#endif
+            char ts[32]; std::strftime(ts, sizeof ts, "%Y-%m-%d %H:%M:%S", &tmv);
             std::ostringstream r;
             r << "cdripper " << VERSION << " — Rip-Report\n"
               << "Datum    : " << ts << "\n"
