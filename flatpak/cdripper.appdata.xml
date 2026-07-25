@@ -26,6 +26,11 @@
   <developer_name>Dennis</developer_name>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="1.9.22" date="2026-07-25">
+      <description>
+        <p>Cover werden häufiger gefunden: Bisher wurde nur bei genau der Ausgabe nachgesehen, die zur Disc gewählt wurde (plus deren Veröffentlichungsgruppe). Passt eine Disc-Kennung auf zwanzig Ausgaben und ausgerechnet die gewählte hat im Cover Art Archive kein Bild, blieb die Karte leer, obwohl das Album selbst erkannt war. Jetzt werden zusätzlich weitere Ausgaben desselben Albums durchprobiert (bis zu vier), bevor aufgegeben wird.</p>
+      </description>
+    </release>
     <release version="1.9.21" date="2026-07-25">
       <description>
         <p>Der Cover-Glow wurde an der Kante hart abgeschnitten: Das Bildfeld der Disc-Karte war schmaler als das Cover samt Ausstrahlung, der Rest fiel weg. Das Feld richtet sich jetzt nach dem tatsächlichen Bild, und der Glow ist deutlich zurückhaltender — vorher deckte er bis zu 84 Prozent und wirkte dadurch wie eine unscharfe Kopie des Covers statt wie Licht.</p>

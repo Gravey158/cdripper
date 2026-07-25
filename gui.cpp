@@ -1508,7 +1508,7 @@ private:
                     fs::path d = fs::path(tmp) / ("mpreview-" + devtag);
                     std::error_code ec; fs::create_directories(d, ec);
                     fs::path out;
-                    if (cdr::fetch_cover(al.mb_release_id, ua, d, out))
+                    if (cdr::fetch_cover_for_album(al, ua, d, out))
                         cov = QString::fromStdString(out.string());
                 } catch (...) {}
                 plog(cov.isEmpty() ? "kein Cover gefunden"
@@ -3610,7 +3610,7 @@ void MainWindow::discWatch() {
                 fs::path dir = fs::path(tmp) / "preview";
                 std::error_code ec; fs::create_directories(dir, ec);
                 fs::path out;
-                if (cdr::fetch_cover(al.mb_release_id, ua, dir, out))
+                if (cdr::fetch_cover_for_album(al, ua, dir, out))
                     cov = out.string();
             } catch (...) {}
             clog(cov.empty() ? "Vorschau: kein Cover gefunden."

@@ -23,7 +23,7 @@ namespace cdr {
 //   PATCH  kleiner Bugfix / kleine Änderung
 // Bei jeder veröffentlichten Änderung hier hochzählen und im lokalen
 // Git-Repo einen passenden Tag setzen (git tag -a vX.Y.Z).
-constexpr const char* VERSION = "1.9.21";
+constexpr const char* VERSION = "1.9.22";
 
 struct Config {
     std::string device        = "/dev/sr0";   // primäres/Single-Laufwerk
@@ -241,6 +241,16 @@ Album placeholder_album(int n_audio_tracks);   // "Unknown Artist / Track NN"
 // Lädt Cover-Art vom Cover Art Archive nach <dir>/cover.jpg. true bei Erfolg.
 bool fetch_cover(const std::string& mb_release_id, const std::string& ua,
                  const fs::path& dir, fs::path& out);
+
+// Cover für ein Album besorgen — hartnäckiger als fetch_cover: Zuerst die
+// Ausgabe des Albums selbst (inkl. Release-Group-Fallback). Liefert das
+// Cover Art Archive dafür nichts, werden weitere Ausgaben desselben Albums
+// über die MusicBrainz-Titelsuche durchprobiert. Genau der Fall, wenn eine
+// Disc-ID auf 20 Ausgaben passt und ausgerechnet die gewählte kein Bild hat.
+// max_tries begrenzt die zusätzlichen Versuche (Netz/Rate-Limit).
+bool fetch_cover_for_album(const Album& a, const std::string& ua,
+                           const fs::path& dir, fs::path& out,
+                           int max_tries = 4);
 
 // Synced Lyrics (LRC) von LRCLIB; "" wenn nichts gefunden. Best effort.
 std::string fetch_synced_lyrics(const std::string& artist,

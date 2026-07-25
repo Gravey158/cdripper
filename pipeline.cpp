@@ -407,7 +407,7 @@ void Pipeline::process_disc(Drive& drv, const std::atomic<bool>& stop,
     // (Pipe-Stau + Watchdog-Fehlalarm).
     {
         fs::path cov;
-        if (fetch_cover(snap.mb_release_id, cfg_.mb_useragent, work, cov)) {
+        if (fetch_cover_for_album(snap, cfg_.mb_useragent, work, cov)) {
             std::lock_guard<std::mutex> l(album_mu_);
             album_.cover_jpg = cov;
             if (cb_.onCover) cb_.onCover(cov);

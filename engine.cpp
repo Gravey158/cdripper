@@ -2129,6 +2129,26 @@ bool fetch_cover(const std::string& rid, const std::string& ua,
     return false;
 }
 
+bool fetch_cover_for_album(const Album& a, const std::string& ua,
+                           const fs::path& dir, fs::path& out, int max_tries) {
+    if (fetch_cover(a.mb_release_id, ua, dir, out)) return true;
+    // Die gewählte Ausgabe hat im Cover Art Archive kein Bild. Andere
+    // Ausgaben desselben Albums (andere Länder, Wiederveröffentlichungen)
+    // haben oft eins — über die Titelsuche einsammeln und der Reihe nach
+    // probieren.
+    if (a.artist.empty() || a.title.empty()) return false;
+    std::vector<ReleaseHit> hits;
+    try { hits = mb_search_releases(a.artist, a.title, ua); }
+    catch (...) { return false; }
+    int tries = 0;
+    for (const auto& h : hits) {
+        if (h.mbid.empty() || h.mbid == a.mb_release_id) continue;
+        if (++tries > max_tries) break;
+        if (fetch_cover(h.mbid, ua, dir, out)) return true;
+    }
+    return false;
+}
+
 std::string fetch_synced_lyrics(const std::string& artist,
                                 const std::string& title,
                                 const std::string& album,
