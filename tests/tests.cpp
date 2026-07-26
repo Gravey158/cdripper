@@ -557,6 +557,79 @@ int main() {
               "Torwächter wartet nicht länger als nötig");
     }
 
+    // ── Diagnose-Protokoll ─────────────────────────────────────────────
+    // Wichtig ist beides: dass eingeschaltete Stufen wirklich schreiben —
+    // und dass ausgeschaltete wirklich schweigen. Ein Protokoll, das trotz
+    // Stufe "error" jede Funktion mitschreibt, macht die Rip-Platte voll.
+    {
+        std::error_code ec;
+        fs::path home = fs::temp_directory_path() /
+            ("cdr-log-" + std::to_string(::getpid()));
+        fs::remove_all(home, ec);
+        fs::create_directories(home, ec);
+        ::setenv("HOME", home.string().c_str(), 1);
+        const fs::path lf = home / ".local/share/cdripper/cdripper.log";
+
+        auto read_log = [&]() -> std::string {
+            std::ifstream f(lf);
+            return std::string((std::istreambuf_iterator<char>(f)),
+                                std::istreambuf_iterator<char>());
+        };
+        auto count = [](const std::string& h, const std::string& n) {
+            int c = 0;
+            for (size_t p = h.find(n); p != std::string::npos;
+                 p = h.find(n, p + 1)) ++c;
+            return c;
+        };
+
+        set_log_level(LogLevel::Info);
+        CHECK(get_log_level() == LogLevel::Info, "Stufe gesetzt");
+        CHECK(log_level_from_string("trace") == LogLevel::Trace, "trace erkannt");
+        CHECK(log_level_from_string("DEBUG") == LogLevel::Debug, "Grossschreibung");
+        CHECK(log_level_from_string("quatsch") == LogLevel::Info,
+              "unbekannte Stufe faellt auf info zurueck");
+
+        // Auf Info darf Debug nichts schreiben, Warn dagegen schon.
+        CDR_DBG("test", "unsichtbar");
+        CDR_WARN("test", "sichtbar");
+        std::string got = read_log();
+        CHECK(got.find("unsichtbar") == std::string::npos,
+              "Debug schweigt auf Stufe Info");
+        CHECK(got.find("sichtbar") != std::string::npos,
+              "Warnung erscheint auf Stufe Info");
+        CHECK(got.find("<test>") != std::string::npos, "Kategorie steht drin");
+
+        // Kontext (Laufwerk) muss in der Zeile stehen, sonst ist ein
+        // Protokoll aus mehreren parallelen Rips nicht zuzuordnen.
+        set_log_context("sr7");
+        CDR_WARN("test", "mit Kontext");
+        got = read_log();
+        CHECK(got.find("[sr7]") != std::string::npos, "Kontext steht in der Zeile");
+        set_log_context("");
+
+        // ScopeTrace: nur auf Trace, dann aber Eintritt UND Austritt.
+        set_log_level(LogLevel::Debug);
+        { CDR_TRACE("test"); }
+        int before = count(read_log(), "→ ");
+        CHECK(before == 0, "ScopeTrace schweigt unterhalb von Trace");
+
+        set_log_level(LogLevel::Trace);
+        { CDR_TRACE("test"); }
+        got = read_log();
+        CHECK(count(got, "→ ") == 1, "Trace schreibt den Eintritt");
+        CHECK(count(got, "← ") == 1, "Trace schreibt den Austritt");
+
+        // Auch bei einer Ausnahme muss der Austritt kommen — sonst fehlt im
+        // Protokoll genau die Stelle, an der es schiefging.
+        try { CDR_TRACE("test"); throw std::runtime_error("x"); }
+        catch (...) {}
+        CHECK(count(read_log(), "← ") == 2,
+              "Austritt wird auch bei einer Ausnahme protokolliert");
+
+        set_log_level(LogLevel::Info);
+        fs::remove_all(home, ec);
+    }
+
     std::printf("\n%d OK, %d FAIL\n", g_ok, g_fail);
     return g_fail ? 1 : 0;
 }

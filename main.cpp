@@ -86,6 +86,9 @@ static void usage(const char* a0) {
       "    --once          Nur eine CD verarbeiten, dann beenden\n"
       "    --dry-run       Rippen+Encoden, aber NICHT hochladen\n"
       "    --calibrate     Drive-Offset gegen AccurateRip kalibrieren+speichern\n"
+      "    --log-level L   Protokoll-Ausfuehrlichkeit: error|warn|info|debug|trace\n"
+      "                    (debug = jeder HTTP-Aufruf und Laufwerkszugriff,\n"
+      "                     trace = zusaetzlich Funktionsverlauf mit Dauer)\n"
       "    --cli           Headless erzwingen (keine GUI)\n"
       "    --gui           GUI erzwingen\n"
       "    -h, --help      Diese Hilfe\n";
@@ -164,6 +167,7 @@ int main(int argc, char** argv) {
     }
 
     std::string cfg_path;          // leer = aus aktivem Profil ableiten
+    std::string log_level_arg;     // leer = aus Config bzw. Umgebung
     std::vector<std::string> dev_overrides;     // T7: --device mehrfach
     bool all_drives = false;                     // T7: --all-drives
     bool once = false, dry = false, force_cli = false, force_gui = false;
@@ -175,6 +179,7 @@ int main(int argc, char** argv) {
             dev_overrides.push_back(argv[++i]);  // mehrfach = Multi-Laufwerk
         else if (a == "--all-drives") all_drives = true;
         else if (a == "--config" && i + 1 < argc) cfg_path     = argv[++i];
+        else if (a == "--log-level" && i + 1 < argc) log_level_arg = argv[++i];
         else if (a == "--once")    once      = true;
         else if (a == "--dry-run") dry       = true;
         else if (a == "--calibrate") calibrate = true;
@@ -207,6 +212,19 @@ int main(int argc, char** argv) {
         cfg_path = cdr::profile_path(cdr::active_profile());
     cdr::set_config_path(cfg_path);     // drive_offsets.ini neben die Config
     cdr::Config cfg = cdr::load_config(cfg_path);
+
+    // Ausfuehrlichkeit des Diagnose-Protokolls festlegen. Rangfolge:
+    // Kommandozeile schlaegt Umgebung schlaegt Config. Die Umgebungs-
+    // variable ist der Weg fuer einen einmaligen Lauf, ohne die
+    // gespeicherte Einstellung anzufassen:
+    //   CDRIPPER_LOG_LEVEL=trace flatpak run io.github.gravey158.cdripper
+    {
+        std::string lv = cfg.log_level;
+        if (const char* e = std::getenv("CDRIPPER_LOG_LEVEL")) lv = e;
+        if (!log_level_arg.empty()) lv = log_level_arg;
+        cdr::set_log_level(cdr::log_level_from_string(lv));
+        cfg.log_level = lv;
+    }
     if (all_drives) {                            // T7: alle erkannten
         auto all = cdr::list_optical_devices();
         if (!all.empty()) { cfg.devices = all; cfg.device = all.front(); }

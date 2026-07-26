@@ -26,6 +26,14 @@
   <developer_name>Dennis</developer_name>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="1.11.0" date="2026-07-26">
+      <description>
+        <p>Neu: ein einstellbares Diagnose-Protokoll. Bisher schrieb die Anwendung nur mit, was ohnehin im Fenster stand — und das entstand ausschließlich in der Ablaufsteuerung. Der Kern, in dem Laufwerkszugriffe, Netzabrufe und Uploads passieren, schwieg vollständig. Genau dort sitzen aber die Fehler, die sich nicht auf Kommando nachstellen lassen.</p>
+        <p>Unter Einstellungen → Protokoll lässt sich das jetzt umschalten. „Ausführlich“ hält jeden Netzabruf mit Status und Dauer fest, jedes Öffnen und Schließen eines Laufwerks und jeden einzelnen Auswurfversuch samt Grund des Scheiterns. „Sehr ausführlich“ protokolliert zusätzlich, welche Funktion wann betreten und verlassen wurde und wie lange sie gebraucht hat — auch dann, wenn sie über einen Fehler verlassen wird.</p>
+        <p>Jede Zeile trägt die Uhrzeit auf die Millisekunde und das Laufwerk, zu dem sie gehört. Bei mehreren gleichzeitig laufenden Laufwerken war ein Protokoll vorher nicht zuzuordnen. Warnungen und Fehler gehen zusätzlich an die Fehlerausgabe, tauchen also auch im Systemprotokoll auf.</p>
+        <p>Ausgeschaltet kostet das nichts: Für eine abgeschaltete Stufe wird die Meldung nicht einmal zusammengebaut. Für einen einmaligen Lauf ohne bleibende Änderung gibt es CDRIPPER_LOG_LEVEL=trace und den Schalter --log-level.</p>
+      </description>
+    </release>
     <release version="1.10.2" date="2026-07-26">
       <description>
         <p>Das Kalibrieren eines Laufwerks über die Einstellungen brach sofort mit „CD Ripper läuft bereits" ab. Ursache: Für die Kalibrierung startet die Anwendung sich selbst noch einmal — und der Schutz, der ein zweites Fenster verhindert, wies dabei ihr eigenes Kind ab. Aus der laufenden Anwendung heraus konnte man also nie kalibrieren. Ein Wettlauf um das Laufwerk entsteht durch die Ausnahme nicht: Die Einstellungen lassen sich ohnehin nicht öffnen, solange irgendwo ein Lauf aktiv ist.</p>

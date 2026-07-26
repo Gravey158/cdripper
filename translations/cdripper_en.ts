@@ -10,7 +10,7 @@
     <message>
         <source>Diese Disc passt auf mehrere Releases (Edition/Land).
 Bitte die richtige wählen — oder Abbrechen, um den Rip zu stoppen
-(dann per „Metadaten suchen…" das richtige Album wählen).</source>
+(dann per „Metadaten suchen…&quot; das richtige Album wählen).</source>
         <translation>This disc matches several releases (edition/country).
 Please pick the right one — or Cancel to stop the rip
 (then choose the correct album via “Search metadata…”).</translation>
@@ -19,8 +19,8 @@ Please pick the right one — or Cancel to stop the rip
 <context>
     <name>DiscScanWidget</name>
     <message>
-        <source>&lt;b&gt;Disc-Grafik&lt;/b&gt;&lt;br&gt;außen = Disc-Rand, innen = Anfang&lt;br&gt;&lt;span style='color:#27ae60'&gt;■&lt;/span&gt; ok · &lt;span style='color:#e0a83e'&gt;■&lt;/span&gt; langsam · &lt;span style='color:#c0392b'&gt;■&lt;/span&gt; Lesefehler&lt;br&gt;(noch keine Disc gelesen)</source>
-        <translation>&lt;b&gt;Disc map&lt;/b&gt;&lt;br&gt;outer = disc edge, inner = start&lt;br&gt;&lt;span style='color:#27ae60'&gt;■&lt;/span&gt; ok · &lt;span style='color:#e0a83e'&gt;■&lt;/span&gt; slow · &lt;span style='color:#c0392b'&gt;■&lt;/span&gt; read error&lt;br&gt;(no disc read yet)</translation>
+        <source>&lt;b&gt;Disc-Grafik&lt;/b&gt;&lt;br&gt;außen = Disc-Rand, innen = Anfang&lt;br&gt;&lt;span style=&apos;color:#27ae60&apos;&gt;■&lt;/span&gt; ok · &lt;span style=&apos;color:#e0a83e&apos;&gt;■&lt;/span&gt; langsam · &lt;span style=&apos;color:#c0392b&apos;&gt;■&lt;/span&gt; Lesefehler&lt;br&gt;(noch keine Disc gelesen)</source>
+        <translation>&lt;b&gt;Disc map&lt;/b&gt;&lt;br&gt;outer = disc edge, inner = start&lt;br&gt;&lt;span style=&apos;color:#27ae60&apos;&gt;■&lt;/span&gt; ok · &lt;span style=&apos;color:#e0a83e&apos;&gt;■&lt;/span&gt; slow · &lt;span style=&apos;color:#c0392b&apos;&gt;■&lt;/span&gt; read error&lt;br&gt;(no disc read yet)</translation>
     </message>
     <message>
         <source>(Titel unbekannt)</source>
@@ -63,8 +63,8 @@ Please pick the right one — or Cancel to stop the rip
         <translation>not checked yet</translation>
     </message>
     <message>
-        <source>&lt;br&gt;Zustand: &lt;span style='color:%1'&gt;■&lt;/span&gt; %2</source>
-        <translation>&lt;br&gt;Condition: &lt;span style='color:%1'&gt;■&lt;/span&gt; %2</translation>
+        <source>&lt;br&gt;Zustand: &lt;span style=&apos;color:%1&apos;&gt;■&lt;/span&gt; %2</source>
+        <translation>&lt;br&gt;Condition: &lt;span style=&apos;color:%1&apos;&gt;■&lt;/span&gt; %2</translation>
     </message>
 </context>
 <context>
@@ -329,8 +329,8 @@ to pick one</translation>
         <translation>About CD Ripper…</translation>
     </message>
     <message>
-        <source>&lt;span style='color:#2979ff;font-size:16pt;'&gt;●&lt;/span&gt;&amp;nbsp;&amp;nbsp;&lt;span style='font-size:15pt;font-weight:600;letter-spacing:1px;color:#e8eaed;'&gt;CD&amp;nbsp;RIPPER&lt;/span&gt;</source>
-        <translation>&lt;span style='color:#2979ff;font-size:16pt;'&gt;●&lt;/span&gt;&amp;nbsp;&amp;nbsp;&lt;span style='font-size:15pt;font-weight:600;letter-spacing:1px;color:#e8eaed;'&gt;CD&amp;nbsp;RIPPER&lt;/span&gt;</translation>
+        <source>&lt;span style=&apos;color:#2979ff;font-size:16pt;&apos;&gt;●&lt;/span&gt;&amp;nbsp;&amp;nbsp;&lt;span style=&apos;font-size:15pt;font-weight:600;letter-spacing:1px;color:#e8eaed;&apos;&gt;CD&amp;nbsp;RIPPER&lt;/span&gt;</source>
+        <translation>&lt;span style=&apos;color:#2979ff;font-size:16pt;&apos;&gt;●&lt;/span&gt;&amp;nbsp;&amp;nbsp;&lt;span style=&apos;font-size:15pt;font-weight:600;letter-spacing:1px;color:#e8eaed;&apos;&gt;CD&amp;nbsp;RIPPER&lt;/span&gt;</translation>
     </message>
     <message>
         <source>⧉  Multi-Laufwerk</source>
@@ -509,14 +509,8 @@ Off: continuous mode — every disc inserted is ripped automatically.</translati
         <translation>R – · E – · U –</translation>
     </message>
     <message>
-        <source>Kein Passwort</source>
-        <translation>No password</translation>
-    </message>
-    <message>
-        <source>Kein WebDAV-Passwort gesetzt.
-Setze webdav_pass in der Config (chmod 600) oder Env CDRIPPER_WEBDAV_PASS — oder nutze Dry-Run.</source>
-        <translation>No WebDAV password set.
-Set webdav_pass in the config (chmod 600) or the CDRIPPER_WEBDAV_PASS env var — or use dry run.</translation>
+        <source>Ziel unvollständig</source>
+        <translation>Target incomplete</translation>
     </message>
     <message>
         <source>Läuft …</source>
@@ -731,8 +725,8 @@ Set webdav_pass in the config (chmod 600) or the CDRIPPER_WEBDAV_PASS env var �
         <translation>Preview: metadata from CD-TEXT.</translation>
     </message>
     <message>
-        <source>Vorschau: KEIN Treffer (MB/CDDB/CD-TEXT) → Platzhalter. Tipp: Aktion → 'Titel manuell suchen' / 'per Klang erkennen'.</source>
-        <translation>Preview: NO match (MB/CDDB/CD-TEXT) → placeholder. Tip: Action → 'Search titles manually' / 'Identify by sound'.</translation>
+        <source>Vorschau: KEIN Treffer (MB/CDDB/CD-TEXT) → Platzhalter. Tipp: Aktion → &apos;Titel manuell suchen&apos; / &apos;per Klang erkennen&apos;.</source>
+        <translation>Preview: NO match (MB/CDDB/CD-TEXT) → placeholder. Tip: Action → &apos;Search titles manually&apos; / &apos;Identify by sound&apos;.</translation>
     </message>
     <message>
         <source>Vorschau: Cover-Quelle via Titelsuche (MB).</source>
@@ -779,8 +773,8 @@ Set webdav_pass in the config (chmod 600) or the CDRIPPER_WEBDAV_PASS env var �
         <translation>Cannot be changed while a disc/metadata lookup is running — wait a moment until the scan has finished.</translation>
     </message>
     <message>
-        <source>Profil '%1' gespeichert.</source>
-        <translation>Profile '%1' saved.</translation>
+        <source>Profil &apos;%1&apos; gespeichert.</source>
+        <translation>Profile &apos;%1&apos; saved.</translation>
     </message>
     <message>
         <source>Standard</source>
@@ -791,12 +785,12 @@ Set webdav_pass in the config (chmod 600) or the CDRIPPER_WEBDAV_PASS env var �
         <translation>Saved</translation>
     </message>
     <message>
-        <source>Profil '%1' gespeichert in:
+        <source>Profil &apos;%1&apos; gespeichert in:
 
 %2
 
 Ist jetzt aktiv. Änderungen greifen ab der nächsten CD.</source>
-        <translation>Profile '%1' saved to:
+        <translation>Profile &apos;%1&apos; saved to:
 
 %2
 
@@ -855,8 +849,8 @@ The new language appears after a restart of the app.</translation>
         <translation>Disc detected — starting scan …</translation>
     </message>
     <message>
-        <source>&lt;small&gt;Außen = Disc-Rand, innen = Anfang. &lt;span style='color:#27ae60'&gt;■&lt;/span&gt; ok &amp;nbsp; &lt;span style='color:#e0a83e'&gt;■&lt;/span&gt; langsam &amp;nbsp; &lt;span style='color:#c0392b'&gt;■&lt;/span&gt; Lesefehler&lt;/small&gt;</source>
-        <translation>&lt;small&gt;Outer = disc edge, inner = start. &lt;span style='color:#27ae60'&gt;■&lt;/span&gt; ok &amp;nbsp; &lt;span style='color:#e0a83e'&gt;■&lt;/span&gt; slow &amp;nbsp; &lt;span style='color:#c0392b'&gt;■&lt;/span&gt; read error&lt;/small&gt;</translation>
+        <source>&lt;small&gt;Außen = Disc-Rand, innen = Anfang. &lt;span style=&apos;color:#27ae60&apos;&gt;■&lt;/span&gt; ok &amp;nbsp; &lt;span style=&apos;color:#e0a83e&apos;&gt;■&lt;/span&gt; langsam &amp;nbsp; &lt;span style=&apos;color:#c0392b&apos;&gt;■&lt;/span&gt; Lesefehler&lt;/small&gt;</source>
+        <translation>&lt;small&gt;Outer = disc edge, inner = start. &lt;span style=&apos;color:#27ae60&apos;&gt;■&lt;/span&gt; ok &amp;nbsp; &lt;span style=&apos;color:#e0a83e&apos;&gt;■&lt;/span&gt; slow &amp;nbsp; &lt;span style=&apos;color:#c0392b&apos;&gt;■&lt;/span&gt; read error&lt;/small&gt;</translation>
     </message>
     <message>
         <source>Track</source>
@@ -923,12 +917,12 @@ The new language appears after a restart of the app.</translation>
         <translation>Disc: &lt;b&gt;%1&lt;/b&gt; — %2</translation>
     </message>
     <message>
-        <source>&lt;br&gt;&lt;span style='color:#e0a83e'&gt;Scan unvollständig (Laufwerk hing / abgebrochen) — Teil-Karte zeigt, wo es hängt.&lt;/span&gt;</source>
-        <translation>&lt;br&gt;&lt;span style='color:#e0a83e'&gt;Scan incomplete (drive stalled / aborted) — the partial map shows where it hangs.&lt;/span&gt;</translation>
+        <source>&lt;br&gt;&lt;span style=&apos;color:#e0a83e&apos;&gt;Scan unvollständig (Laufwerk hing / abgebrochen) — Teil-Karte zeigt, wo es hängt.&lt;/span&gt;</source>
+        <translation>&lt;br&gt;&lt;span style=&apos;color:#e0a83e&apos;&gt;Scan incomplete (drive stalled / aborted) — the partial map shows where it hangs.&lt;/span&gt;</translation>
     </message>
     <message>
-        <source>&lt;br&gt;&lt;span style='color:#9aa0aa'&gt;Schadensbild (grob): </source>
-        <translation>&lt;br&gt;&lt;span style='color:#9aa0aa'&gt;Damage pattern (rough): </translation>
+        <source>&lt;br&gt;&lt;span style=&apos;color:#9aa0aa&apos;&gt;Schadensbild (grob): </source>
+        <translation>&lt;br&gt;&lt;span style=&apos;color:#9aa0aa&apos;&gt;Damage pattern (rough): </translation>
     </message>
     <message>
         <source>Schadensbild: </source>
@@ -999,12 +993,12 @@ The new language appears after a restart of the app.</translation>
         <translation>Searching MusicBrainz …</translation>
     </message>
     <message>
-        <source>Manuelle Suche: MusicBrainz nach Interpret='</source>
-        <translation>Manual search: MusicBrainz for artist='</translation>
+        <source>Manuelle Suche: MusicBrainz nach Interpret=&apos;</source>
+        <translation>Manual search: MusicBrainz for artist=&apos;</translation>
     </message>
     <message>
-        <source>' Album='</source>
-        <translation>' album='</translation>
+        <source>&apos; Album=&apos;</source>
+        <translation>&apos; album=&apos;</translation>
     </message>
     <message>
         <source>Keine MusicBrainz-Treffer.</source>
@@ -1175,8 +1169,8 @@ The new language appears after a restart of the app.</translation>
         <translation>&lt;b&gt;%1&lt;/b&gt;&lt;br&gt;%2 — %3&lt;br&gt;Disc condition: &lt;b&gt;%4&lt;/b&gt;%5&lt;br&gt;AccurateRip %6 · %7 track(s) damaged · %8 · %9</translation>
     </message>
     <message>
-        <source> &lt;span style='color:#e0a83e'&gt;(Scan unvollständig)&lt;/span&gt;</source>
-        <translation> &lt;span style='color:#e0a83e'&gt;(scan incomplete)&lt;/span&gt;</translation>
+        <source> &lt;span style=&apos;color:#e0a83e&apos;&gt;(Scan unvollständig)&lt;/span&gt;</source>
+        <translation> &lt;span style=&apos;color:#e0a83e&apos;&gt;(scan incomplete)&lt;/span&gt;</translation>
     </message>
     <message>
         <source>nur Scan</source>
@@ -1301,7 +1295,7 @@ Aus: jedes Laufwerk rippt nur die aktuell eingelegte CD — dann hat jede Disc-K
 Off: every drive rips only the disc currently inserted — each disc card then has its own ▶ button for a single start.</translation>
     </message>
     <message>
-        <source>🔥 Turbo an — „Alle starten" rippt im Dauerlauf weiter.</source>
+        <source>🔥 Turbo an — „Alle starten&quot; rippt im Dauerlauf weiter.</source>
         <translation>🔥 Turbo on — “Start all” keeps ripping in continuous mode.</translation>
     </message>
     <message>
@@ -1337,6 +1331,10 @@ Off: every drive rips only the disc currently inserted — each disc card then h
         <translation>Status</translation>
     </message>
     <message>
+        <source>Ziel unvollständig</source>
+        <translation>Target incomplete</translation>
+    </message>
+    <message>
         <source>[start] Einzeldurchlauf — je eine CD pro Laufwerk.</source>
         <translation>[start] Single pass — one CD per drive.</translation>
     </message>
@@ -1349,8 +1347,8 @@ Off: every drive rips only the disc currently inserted — each disc card then h
         <translation>[hotplug] Drive detected: </translation>
     </message>
     <message>
-        <source>&lt;b&gt;%1 Laufwerk(e)&lt;/b&gt; — pro Laufwerk eine &lt;i&gt;unterschiedliche&lt;/i&gt; Disc einlegen, dann 'Alle starten'.</source>
-        <translation>&lt;b&gt;%1 drive(s)&lt;/b&gt; — insert a &lt;i&gt;different&lt;/i&gt; disc in each drive, then 'Start all'.</translation>
+        <source>&lt;b&gt;%1 Laufwerk(e)&lt;/b&gt; — pro Laufwerk eine &lt;i&gt;unterschiedliche&lt;/i&gt; Disc einlegen, dann &apos;Alle starten&apos;.</source>
+        <translation>&lt;b&gt;%1 drive(s)&lt;/b&gt; — insert a &lt;i&gt;different&lt;/i&gt; disc in each drive, then &apos;Start all&apos;.</translation>
     </message>
     <message>
         <source>Track %1</source>
@@ -1379,6 +1377,49 @@ Off: every drive rips only the disc currently inserted — each disc card then h
     <message>
         <source>⚠ Einstellungen konnten nicht gespeichert werden.</source>
         <translation>⚠ Settings could not be saved.</translation>
+    </message>
+</context>
+<context>
+    <name>QObject</name>
+    <message>
+        <source>Für den Upload fehlen Serveradresse und/oder Benutzername.
+
+Einstellungen → Upload — oder „Dry-Run“ ankreuzen, dann wird nur gerippt und nichts übertragen.</source>
+        <translation>The server address and/or user name for uploading are missing.
+
+Settings → Upload — or tick “Dry run”, which rips without transferring anything.</translation>
+    </message>
+    <message>
+        <source>Kein WebDAV-Passwort gesetzt.
+
+Einstellungen → Upload, alternativ webdav_pass in der Config (chmod 600) oder die Umgebungsvariable CDRIPPER_WEBDAV_PASS.</source>
+        <translation>No WebDAV password set.
+
+Settings → Upload, or webdav_pass in the config file (chmod 600), or the CDRIPPER_WEBDAV_PASS environment variable.</translation>
+    </message>
+    <message>
+        <source>Kein Zielordner gewählt.
+
+Einstellungen → Upload → Zielbasis.</source>
+        <translation>No target folder chosen.
+
+Settings → Upload → base path.</translation>
+    </message>
+    <message>
+        <source>Für SSH fehlen Host und/oder Basispfad.
+
+Einstellungen → Upload.</source>
+        <translation>The SSH host and/or base path are missing.
+
+Settings → Upload.</translation>
+    </message>
+    <message>
+        <source>Keine SMB-Freigabe angegeben.
+
+Einstellungen → Upload (smb://host/share/…).</source>
+        <translation>No SMB share given.
+
+Settings → Upload (smb://host/share/…).</translation>
     </message>
 </context>
 <context>
@@ -1464,6 +1505,22 @@ Off: every drive rips only the disc currently inserted — each disc card then h
         <translation>System language</translation>
     </message>
     <message>
+        <source>Normal</source>
+        <translation>Normal</translation>
+    </message>
+    <message>
+        <source>Nur Warnungen</source>
+        <translation>Warnings only</translation>
+    </message>
+    <message>
+        <source>Ausführlich (Fehlersuche)</source>
+        <translation>Verbose (troubleshooting)</translation>
+    </message>
+    <message>
+        <source>Sehr ausführlich (Funktionsverlauf)</source>
+        <translation>Very verbose (function trace)</translation>
+    </message>
+    <message>
         <source>Laufwerk für die Kalibrierung wählen.</source>
         <translation>Choose the drive to calibrate.</translation>
     </message>
@@ -1526,6 +1583,10 @@ Off: every drive rips only the disc currently inserted — each disc card then h
     <message>
         <source>Sprache:</source>
         <translation>Language:</translation>
+    </message>
+    <message>
+        <source>Protokoll:</source>
+        <translation>Logging:</translation>
     </message>
     <message>
         <source>Laufwerk:</source>
@@ -1692,6 +1753,18 @@ Off: every drive rips only the disc currently inserted — each disc card then h
         <translation>Language of the user interface. It is applied at program start — a change only takes effect after a restart of the app.</translation>
     </message>
     <message>
+        <source>Wie ausführlich mitgeschrieben wird — die Datei liegt unter ~/.local/share/cdripper/cdripper.log und wird bei 2 MB umgebrochen.
+
+„Normal“ reicht im Alltag. „Ausführlich“ hält jeden Netzabruf, jedes Öffnen eines Laufwerks und jeden Auswurfversuch mit Dauer fest — das ist, was man bei einem Fehler braucht, der nur manchmal auftritt. „Sehr ausführlich“ protokolliert zusätzlich, welche Funktion wann betreten und verlassen wurde, und wie lange sie gebraucht hat.
+
+Die beiden ausführlichen Stufen schreiben viel; sie gehören eingeschaltet, solange gesucht wird, und danach wieder zurück.</source>
+        <translation>How much detail is written down — the file lives at ~/.local/share/cdripper/cdripper.log and rolls over at 2 MB.
+
+“Normal” is fine day to day. “Verbose” records every network request, every drive being opened and every eject attempt with its duration — which is exactly what you need for a fault that only shows up sometimes. “Very verbose” additionally records which function was entered and left when, and how long it took.
+
+Both verbose levels write a lot; turn them on while hunting something down, and back afterwards.</translation>
+    </message>
+    <message>
         <source>Pfad zum CD-Laufwerk (z. B. /dev/sr0). Bei mehreren Laufwerken hier das gewünschte angeben.</source>
         <translation>Path to the CD drive (e.g. /dev/sr0). With several drives, enter the one you want here.</translation>
     </message>
@@ -1748,8 +1821,8 @@ Off: every drive rips only the disc currently inserted — each disc card then h
         <translation>User agent for MusicBrainz requests — should contain a contact address (MusicBrainz policy).</translation>
     </message>
     <message>
-        <source>AcoustID-API-Key (kostenlos: acoustid.org/new-application). Aktiviert 'Titel per Klang erkennen': identifiziert die Songs am akustischen Fingerprint, auch wenn die Disc in keiner TOC-DB steht.</source>
-        <translation>AcoustID API key (free: acoustid.org/new-application). Enables 'Identify titles by sound': identifies the songs by their acoustic fingerprint, even when the disc is in no TOC database.</translation>
+        <source>AcoustID-API-Key (kostenlos: acoustid.org/new-application). Aktiviert &apos;Titel per Klang erkennen&apos;: identifiziert die Songs am akustischen Fingerprint, auch wenn die Disc in keiner TOC-DB steht.</source>
+        <translation>AcoustID API key (free: acoustid.org/new-application). Enables &apos;Identify titles by sound&apos;: identifies the songs by their acoustic fingerprint, even when the disc is in no TOC database.</translation>
     </message>
     <message>
         <source>Arbeitsverzeichnis für die temporären WAV/FLAC-Dateien während des Rippens.</source>
@@ -1816,8 +1889,8 @@ Off: every drive rips only the disc currently inserted — each disc card then h
         <translation>Compares the rips against the AccurateRip database to confirm bit-exact correctness.</translation>
     </message>
     <message>
-        <source>Liest jeden Track zweimal und vergleicht die Prüfsummen beider Lesungen. Stimmen sie überein, ist der Rip bewiesen — ganz ohne AccurateRip. Genau das ist bei Maxis, Promos und Samplern wichtig, die in AccurateRip gar nicht stehen und daher nie bestätigt werden können. Preis: der Rip dauert ungefähr doppelt so lange.</source>
-        <translation>Reads every track twice and compares the checksums of both passes. If they match, the rip is proven — entirely without AccurateRip. That is exactly what matters for maxi singles, promos and samplers that are not in AccurateRip at all and can therefore never be confirmed. The price: the rip takes about twice as long.</translation>
+        <source>Liest jeden Track zweimal und vergleicht die Prüfsummen beider Lesungen. Stimmen sie überein, ist der Rip bewiesen — ganz ohne AccurateRip. Genau das ist bei Maxis, Promos und Samplern wichtig, die in AccurateRip gar nicht stehen und daher nie bestätigt werden können. Preis: der Rip dauert ungefähr doppelt so lange — die Restzeit-Schätzung rechnet die Prüflesung nicht mit, sie zeigt also etwa die Hälfte an.</source>
+        <translation>Reads every track twice and compares the checksums of both passes. If they agree, the rip is proven — entirely without AccurateRip. That matters for maxi singles, promos and samplers, which aren't in AccurateRip at all and can therefore never be confirmed. The price: the rip takes roughly twice as long — and the remaining-time estimate doesn't account for the verification pass, so it shows about half.</translation>
     </message>
     <message>
         <source>Manueller Laufwerks-Offset (Samples). Pro Laufwerk kalibrierte Werte haben Vorrang.</source>

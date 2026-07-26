@@ -271,6 +271,7 @@ private:
     QMap<QObject*, QString> helpText_;
     QLineEdit *tmpdir_, *ua_, *musicRoot_, *acoustidKey_, *discogsToken_;
     QComboBox *language_;        // Oberflächensprache (de/en/auto)
+    QComboBox *logLevel_;        // Ausführlichkeit des Diagnose-Protokolls
     QComboBox *device_;          // erkannte Laufwerke (Kalibrier-Auswahl)
     QComboBox *readSpeed_;
     QComboBox *scanDensity_;

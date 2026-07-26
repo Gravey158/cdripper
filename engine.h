@@ -23,7 +23,7 @@ namespace cdr {
 //   PATCH  kleiner Bugfix / kleine Änderung
 // Bei jeder veröffentlichten Änderung hier hochzählen und im lokalen
 // Git-Repo einen passenden Tag setzen (git tag -a vX.Y.Z).
-constexpr const char* VERSION = "1.10.2";
+constexpr const char* VERSION = "1.11.0";
 
 struct Config {
     std::string device        = "/dev/sr0";   // primäres/Single-Laufwerk
@@ -61,6 +61,13 @@ struct Config {
     // Bleibt bewusst in der Config (nicht in QSettings), damit die
     // Einstellung mit dem Profil mitwandert wie alles andere auch.
     std::string language      = "de";
+    // Ausfuehrlichkeit des Diagnose-Protokolls: error | warn | info |
+    // debug | trace. "debug" protokolliert jeden HTTP-Aufruf, jedes
+    // Oeffnen eines Laufwerks und jeden Auswurfversuch; "trace"
+    // zusaetzlich Eintritt, Austritt und Dauer der instrumentierten
+    // Funktionen. Beides kostet spuerbar Plattenplatz und gehoert nur
+    // eingeschaltet, solange ein Fehler gesucht wird.
+    std::string log_level     = "info";
     bool        dry_run       = false;  // rippen/encoden, aber nicht hochladen
     int         read_speed    = 0;      // 0 = Laufwerks-Default; kleiner (z.B.
                                         // 4/8) = bessere Recovery zerkratzter CDs
@@ -467,6 +474,65 @@ long long fs_free_bytes(const std::string& path);
 // Hängt `line` zeitgestempelt an ~/.local/share/cdripper/cdripper.log
 // (Rotation bei >2 MB → .1). Best effort, nie werfend.
 void log_to_file(const std::string& line);
+
+// ── Diagnose-Protokoll ────────────────────────────────────────────────────
+// Das bisherige Protokoll zeigt nur, was der Anwender sehen soll ("Track 3
+// fertig") — und es entsteht ausschließlich in der Pipeline. Die Engine, wo
+// Laufwerkszugriffe, HTTP-Aufrufe und Uploads passieren, schwieg vollständig.
+// Genau dort sitzen aber die Fehler, die sich nicht nachstellen lassen:
+// ein Auswurf, der mal geht und mal nicht; eine MusicBrainz-Anfrage, die im
+// falschen Moment gedrosselt wird; ein Laufwerk, das mitten im Lauf abtaucht.
+//
+// Stufen: Error < Warn < Info < Debug < Trace. Voreinstellung Info.
+// Ist eine Stufe abgeschaltet, kostet die Meldung einen atomaren Vergleich —
+// die Argumente werden gar nicht erst zusammengebaut (Makro mit Kurzschluss).
+enum class LogLevel { Error = 0, Warn = 1, Info = 2, Debug = 3, Trace = 4 };
+
+void     set_log_level(LogLevel l);
+LogLevel get_log_level();
+LogLevel log_level_from_string(const std::string& s);   // unbekannt → Info
+
+// Kennzeichnet den aktuellen Thread, damit sich bei mehreren Laufwerken jede
+// Zeile zuordnen lässt — ohne das ist ein Protokoll aus drei parallelen Rips
+// unlesbar. Üblicherweise der Gerätename ("sr0").
+void set_log_context(const std::string& ctx);
+std::string log_context();
+
+// Schreibt eine Zeile: Zeitstempel mit Millisekunden, Stufe, Kontext,
+// Kategorie, Text. Geht in dieselbe Datei wie log_to_file().
+void log_write(LogLevel l, const char* cat, const std::string& msg);
+
+inline bool log_enabled(LogLevel l) {
+    return static_cast<int>(l) <= static_cast<int>(get_log_level());
+}
+
+// Nur auswerten, wenn die Stufe aktiv ist: `msg` darf beliebig teuer sein.
+#define CDR_LOG(lvl, cat, msg)                                              \
+    do { if (::cdr::log_enabled(lvl)) ::cdr::log_write(lvl, cat, (msg)); }  \
+    while (0)
+#define CDR_ERR(cat, msg)   CDR_LOG(::cdr::LogLevel::Error, cat, msg)
+#define CDR_WARN(cat, msg)  CDR_LOG(::cdr::LogLevel::Warn,  cat, msg)
+#define CDR_INFO(cat, msg)  CDR_LOG(::cdr::LogLevel::Info,  cat, msg)
+#define CDR_DBG(cat, msg)   CDR_LOG(::cdr::LogLevel::Debug, cat, msg)
+
+// Funktionsverlauf: protokolliert Eintritt und Austritt samt Dauer, auch
+// wenn die Funktion über eine Ausnahme verlassen wird. Nur auf Stufe Trace
+// aktiv; darunter legt der Konstruktor nur ein Flag um.
+class ScopeTrace {
+public:
+    ScopeTrace(const char* cat, const char* fn);
+    ~ScopeTrace();
+    void note(const std::string& s);      // Zwischenstand im selben Rahmen
+private:
+    const char* cat_;
+    const char* fn_;
+    bool on_;
+    long long t0_us_;
+};
+#define CDR_TRACE_CAT2(a, b) a##b
+#define CDR_TRACE_CAT(a, b)  CDR_TRACE_CAT2(a, b)
+#define CDR_TRACE(cat) \
+    ::cdr::ScopeTrace CDR_TRACE_CAT(_cdr_trace_, __LINE__)(cat, __func__)
 
 struct ArMatch { int track; int confidence; bool v1; bool v2; };
 // Holt die .bin, vergleicht je Track gegen unsere (v1,v2). Leerer Vektor =

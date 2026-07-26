@@ -5062,8 +5062,19 @@ SettingsDialog::SettingsDialog(const cdr::Config& c, QString cfgPath,
         language_->addItem(tr("Systemsprache"), "auto");
         language_->addItem("Deutsch",  "de");
         language_->addItem("English",  "en");
+        // Ausfuehrlichkeit des Diagnose-Protokolls. Gehoert sichtbar in die
+        // Oberflaeche: Wer einen sporadischen Fehler einfangen will, soll
+        // die App nicht aus dem Terminal mit gesetzter Umgebungsvariable
+        // starten muessen.
+        logLevel_ = new QComboBox;
+        logLevel_->addItem(tr("Normal"), "info");
+        logLevel_->addItem(tr("Nur Warnungen"), "warn");
+        logLevel_->addItem(tr("Ausführlich (Fehlersuche)"), "debug");
+        logLevel_->addItem(tr("Sehr ausführlich (Funktionsverlauf)"), "trace");
         { int li = language_->findData(S(c.language));
           language_->setCurrentIndex(li >= 0 ? li : 1); }
+        { int gi = logLevel_->findData(S(c.log_level));
+          logLevel_->setCurrentIndex(gi >= 0 ? gi : 0); }
         device_     = new QComboBox;
         device_->setSizeAdjustPolicy(QComboBox::AdjustToContents);
         device_->setToolTip(tr("Laufwerk für die Kalibrierung wählen."));
@@ -5126,6 +5137,7 @@ SettingsDialog::SettingsDialog(const cdr::Config& c, QString cfgPath,
             tr("Vorhandene Dateien überschreiben (sonst überspringen)"));
         overwrite_->setChecked(c.overwrite_existing);
         f->addRow(tr("Sprache:"), language_);
+        f->addRow(tr("Protokoll:"), logLevel_);
         f->addRow(tr("Laufwerk:"), device_);
         f->addRow(tr("Lese-Speed:"), readSpeed_);
         f->addRow(tr("Audio-Format:"), preset_);
@@ -5347,6 +5359,16 @@ SettingsDialog::SettingsDialog(const cdr::Config& c, QString cfgPath,
     setHelp(language_,   tr(
         "Sprache der Oberfläche. Wird beim Programmstart gesetzt — "
         "eine Änderung greift erst nach einem Neustart der App."));
+    setHelp(logLevel_,   tr(
+        "Wie ausführlich mitgeschrieben wird — die Datei liegt unter "
+        "~/.local/share/cdripper/cdripper.log und wird bei 2 MB umgebrochen.\n\n"
+        "„Normal“ reicht im Alltag. „Ausführlich“ hält jeden Netzabruf, jedes "
+        "Öffnen eines Laufwerks und jeden Auswurfversuch mit Dauer fest — das "
+        "ist, was man bei einem Fehler braucht, der nur manchmal auftritt. "
+        "„Sehr ausführlich“ protokolliert zusätzlich, welche Funktion wann "
+        "betreten und verlassen wurde, und wie lange sie gebraucht hat.\n\n"
+        "Die beiden ausführlichen Stufen schreiben viel; sie gehören "
+        "eingeschaltet, solange gesucht wird, und danach wieder zurück."));
     setHelp(device_,     tr(
         "Pfad zum CD-Laufwerk (z. B. /dev/sr0). Bei mehreren Laufwerken "
         "hier das gewünschte angeben."));
@@ -5508,6 +5530,8 @@ QString SettingsDialog::selectedProfile() const {
 void SettingsDialog::applyConfig(const cdr::Config& c) {
     { int li = language_->findData(S(c.language));
       if (li >= 0) language_->setCurrentIndex(li); }
+    { int gi = logLevel_->findData(S(c.log_level));
+      if (gi >= 0) logLevel_->setCurrentIndex(gi); }
     { int ix = device_->findData(S(c.device));
       if (ix >= 0) device_->setCurrentIndex(ix); }
     selectSpeed(readSpeed_, c.read_speed);
@@ -5575,6 +5599,7 @@ void SettingsDialog::onNewProfile() {
 cdr::Config SettingsDialog::config() const {
     cdr::Config c = base_;
     c.language     = language_->currentData().toString().toStdString();
+    c.log_level    = logLevel_->currentData().toString().toStdString();
     c.device       = device_->currentData().toString().toStdString();
     c.read_speed   = readSpeed_->currentData().toInt();
     {

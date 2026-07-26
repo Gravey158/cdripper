@@ -10,6 +10,7 @@
 #include <chrono>
 #include <ctime>
 #include <fstream>
+#include <iostream>   // std::cerr — Warnungen zusaetzlich ins Journal
 #include <map>
 #include <mutex>
 #include <thread>
@@ -271,6 +272,7 @@ Config load_config(const std::string& path) {
             // Unbekannte Werte absichtlich nicht filtern: fällt in main.cpp
             // beim Laden des .qm auf Deutsch zurück, statt hier zu meckern.
             else if (k == "language")      c.language      = v;
+            else if (k == "log_level")     c.log_level     = v;
             else if (k == "read_speed")    c.read_speed = std::atoi(v.c_str());
             else if (k == "upload_retries") c.upload_retries = std::atoi(v.c_str());
             else if (k == "replaygain")    c.replaygain =
@@ -340,6 +342,7 @@ bool save_config(const Config& c, const std::string& path) {
       << "discogs_token = "  << c.discogs_token << "\n"
       << "# Oberflächensprache: de | en | auto (Systemsprache)\n"
       << "language = "       << c.language      << "\n"
+      << "log_level = "      << c.log_level     << "\n"
       << "replaygain = "     << b(c.replaygain) << "\n"
       << "audio_format = "   << c.audio_format  << "\n"
       << "audio_quality = "  << c.audio_quality << "\n"
@@ -1202,7 +1205,8 @@ static size_t w_file(char* p, size_t s, size_t n, void* u) {
 static std::optional<std::string> http_get(const std::string& url,
                                            const std::string& ua, long& code) {
     CURL* c = curl_easy_init();
-    if (!c) return std::nullopt;
+    if (!c) { CDR_WARN("http", "curl_easy_init fehlgeschlagen"); return std::nullopt; }
+    const auto _t0 = std::chrono::steady_clock::now();
     std::string body;
     curl_easy_setopt(c, CURLOPT_URL, url.c_str());
     curl_easy_setopt(c, CURLOPT_USERAGENT, ua.c_str());
@@ -1213,6 +1217,18 @@ static std::optional<std::string> http_get(const std::string& url,
     CURLcode rc = curl_easy_perform(c);
     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code);
     curl_easy_cleanup(c);
+    if (log_enabled(LogLevel::Debug)) {
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - _t0).count();
+        // Volle URL, Status und Dauer: Drosselungen (503/429) und haengende
+        // Abfragen sind sonst nicht von "hat nichts gefunden" zu trennen.
+        log_write(rc == CURLE_OK ? LogLevel::Debug : LogLevel::Warn, "http",
+                  std::string(rc == CURLE_OK ? "" : "FEHLGESCHLAGEN ") +
+                  std::to_string(code) + "  " + std::to_string(ms) + " ms  " +
+                  std::to_string(body.size()) + " B  " + url +
+                  (rc == CURLE_OK ? "" :
+                   std::string("  (") + curl_easy_strerror(rc) + ")"));
+    }
     if (rc != CURLE_OK) return std::nullopt;
     return body;
 }
@@ -1243,8 +1259,13 @@ void mb_rate_gate() {
     std::lock_guard<std::mutex> lk(g_mb_mu);       // hält die Reihenfolge fest
     const auto now  = steady_clock::now();
     const auto next = g_mb_last + milliseconds(1100);   // 100 ms Sicherheit
-    if (g_mb_last.time_since_epoch().count() != 0 && now < next)
+    if (g_mb_last.time_since_epoch().count() != 0 && now < next) {
+        const auto wait = duration_cast<milliseconds>(next - now).count();
+        // Wartezeiten hier zeigen unmittelbar, ob sich die Laufwerke im
+        // Sekundenfenster gegenseitig auf den Fuess treten.
+        CDR_DBG("mb", "warte " + std::to_string(wait) + " ms auf das Fenster");
         std::this_thread::sleep_for(next - now);
+    }
     g_mb_last = steady_clock::now();
 }
 
@@ -3117,12 +3138,111 @@ void log_to_file(const std::string& line) {
     } catch (...) {}
 }
 
+// ── Diagnose-Protokoll ────────────────────────────────────────────────────
+namespace {
+std::atomic<int> g_log_level{ static_cast<int>(LogLevel::Info) };
+thread_local std::string t_log_ctx;
+
+const char* level_tag(LogLevel l) {
+    switch (l) {
+        case LogLevel::Error: return "FEHLER";
+        case LogLevel::Warn:  return "WARN  ";
+        case LogLevel::Info:  return "INFO  ";
+        case LogLevel::Debug: return "DEBUG ";
+        case LogLevel::Trace: return "TRACE ";
+    }
+    return "?     ";
+}
+
+long long now_us() {
+    using namespace std::chrono;
+    return duration_cast<microseconds>(
+               steady_clock::now().time_since_epoch()).count();
+}
+}  // namespace
+
+void set_log_level(LogLevel l) {
+    g_log_level.store(static_cast<int>(l), std::memory_order_relaxed);
+}
+LogLevel get_log_level() {
+    return static_cast<LogLevel>(g_log_level.load(std::memory_order_relaxed));
+}
+
+LogLevel log_level_from_string(const std::string& s) {
+    std::string v;
+    for (char c : s) v += (char)std::tolower((unsigned char)c);
+    if (v == "error" || v == "fehler") return LogLevel::Error;
+    if (v == "warn"  || v == "warnung") return LogLevel::Warn;
+    if (v == "debug") return LogLevel::Debug;
+    if (v == "trace") return LogLevel::Trace;
+    return LogLevel::Info;
+}
+
+void set_log_context(const std::string& ctx) { t_log_ctx = ctx; }
+std::string log_context() { return t_log_ctx; }
+
+void log_write(LogLevel l, const char* cat, const std::string& msg) {
+    // Millisekunden gehören dazu: Die interessanten Fehler sind Wettläufe
+    // zwischen Laufwerken, und auf Sekunden gerundet steht alles gleichzeitig.
+    using namespace std::chrono;
+    const auto tp  = system_clock::now();
+    const auto tt  = system_clock::to_time_t(tp);
+    const auto ms  = duration_cast<milliseconds>(tp.time_since_epoch()) % 1000;
+    char ts[32];
+    {
+        // localtime ist nicht thread-sicher; log_to_file() serialisiert zwar
+        // das Schreiben, aber der Zeitstempel entsteht davor.
+        static std::mutex tmu;
+        std::lock_guard<std::mutex> lk(tmu);
+        std::strftime(ts, sizeof ts, "%H:%M:%S", std::localtime(&tt));
+    }
+    std::string line = std::string(ts) + "." +
+        (ms.count() < 100 ? (ms.count() < 10 ? "00" : "0") : "") +
+        std::to_string(ms.count()) + " " + level_tag(l) + " ";
+    if (!t_log_ctx.empty()) line += "[" + t_log_ctx + "] ";
+    line += std::string("<") + (cat ? cat : "-") + "> " + msg;
+    log_to_file(line);
+    // Ab Warnung zusätzlich auf die Fehlerausgabe — im Flatpak landet die im
+    // Journal, damit sieht man Probleme auch ohne die Logdatei zu suchen.
+    if (l <= LogLevel::Warn) std::cerr << line << "\n";
+}
+
+ScopeTrace::ScopeTrace(const char* cat, const char* fn)
+    : cat_(cat), fn_(fn), on_(log_enabled(LogLevel::Trace)), t0_us_(0) {
+    if (!on_) return;
+    t0_us_ = now_us();
+    log_write(LogLevel::Trace, cat_, std::string("→ ") + fn_);
+}
+
+void ScopeTrace::note(const std::string& s) {
+    if (on_) log_write(LogLevel::Trace, cat_,
+                       std::string("  · ") + fn_ + ": " + s);
+}
+
+ScopeTrace::~ScopeTrace() {
+    if (!on_) return;
+    const long long us = now_us() - t0_us_;
+    // Dauer mitschreiben: Damit fallen Hänger auf, ohne dass man zwei
+    // Zeitstempel voneinander abziehen muss.
+    std::string d = us >= 1000000
+        ? std::to_string(us / 1000000) + "," +
+          std::to_string((us % 1000000) / 100000) + " s"
+        : (us >= 1000 ? std::to_string(us / 1000) + " ms"
+                      : std::to_string(us) + " µs");
+    log_write(LogLevel::Trace, cat_,
+              std::string("← ") + fn_ + "  (" + d + ")");
+}
+
 // ───────────────────────────── Drive (ioctl) ──────────────────────────────────
 
 Drive::Drive(const std::string& p) : path_(p) {
 #ifdef __linux__
     // Nur Linux nutzt fd_ (raw_status/disc_ready/has_audio per ioctl).
     fd_ = ::open(p.c_str(), O_RDONLY | O_NONBLOCK);
+    // Jedes offene Handle mitschreiben: Der Kernel lehnt CDROMEJECT ab,
+    // sobald der Geraeteknoten mehr als einmal offen ist. Wer den Auswurf
+    // blockiert, laesst sich sonst nur von aussen mit fuser erraten.
+    CDR_DBG("drive", "open " + p + " -> fd " + std::to_string(fd_));
     if (fd_ < 0)
         throw std::runtime_error("Kann Laufwerk nicht öffnen: " + p + " (" +
                                  std::strerror(errno) + ")");
@@ -3137,7 +3257,10 @@ Drive::Drive(const std::string& p) : path_(p) {
 }
 Drive::~Drive() {
 #ifndef _WIN32
-    if (fd_ >= 0) ::close(fd_);
+    if (fd_ >= 0) {
+        CDR_DBG("drive", "close " + path_ + " (fd " + std::to_string(fd_) + ")");
+        ::close(fd_);
+    }
 #endif
 }
 #ifdef __linux__
@@ -3186,15 +3309,31 @@ static bool scsi_start_stop_eject(int fd) {
 // oft noch kurz belegt hält (EBUSY) und erst nach ein paar hundert ms frei
 // wird.
 static bool do_eject_fd(int fd) {
+    CDR_TRACE("eject");
     ::ioctl(fd, CDROM_LOCKDOOR, 0);          // Klappe entriegeln (Lock weg)
     int last_errno = 0;
     for (int i = 0; i < 8; ++i) {
-        if (::ioctl(fd, CDROMEJECT, 0) == 0) return true;
+        if (::ioctl(fd, CDROMEJECT, 0) == 0) {
+            CDR_DBG("eject", "CDROMEJECT erfolgreich im Versuch " +
+                             std::to_string(i + 1));
+            return true;
+        }
         last_errno = errno;
-        if (scsi_start_stop_eject(fd))       return true;   // USB-Fallback
+        // Auf welchem Weg und im wievielten Anlauf es klappt, ist die
+        // eigentliche Information: "manchmal geht der Auswurf nicht" war
+        // in Wahrheit "ioctl scheitert immer, SCSI faengt es meistens auf".
+        CDR_DBG("eject", "Versuch " + std::to_string(i + 1) +
+                         ": CDROMEJECT -> " + std::strerror(last_errno));
+        if (scsi_start_stop_eject(fd)) {
+            CDR_DBG("eject", "SCSI-Auswurf trug im Versuch " +
+                             std::to_string(i + 1));
+            return true;   // USB-Fallback
+        }
         ::usleep(500 * 1000);
         ::ioctl(fd, CDROM_LOCKDOOR, 0);      // Lock erneut lösen (falls neu)
     }
+    CDR_WARN("eject", std::string("Auswurf nach 8 Versuchen aufgegeben: ") +
+                      std::strerror(last_errno));
     // Für die Fehlersuche festhalten, WORAN es lag. EBUSY heißt fast immer:
     // der Geräteknoten ist (auch) woanders offen — der Kernel lehnt
     // CDROMEJECT dann grundsätzlich ab.
