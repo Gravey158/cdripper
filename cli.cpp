@@ -287,7 +287,15 @@ int run_calibrate(const cdr::Config& cfg) {
 
     std::fprintf(stderr, "%zu Kandidat(en) im Sweep — pruefe jeden gegen "
                  "alle Tracks …\n", cands.size());
-    int best = cands[0], bestm = -1, second = -1;
+    // Registry-Wert vorab holen: Er dient unten als Schiedsrichter, wenn
+    // mehrere Versaetze gleich gut passen.
+    std::optional<int> known;
+    if (!cfg.registry_url.empty())
+        known = cdr::registry_lookup_offset(cfg.registry_url, did,
+                                            cfg.mb_useragent);
+
+    std::vector<std::pair<int,int>> scored;   // (Offset, bestaetigte Tracks)
+    int best = cands[0], bestm = -1;
     for (int off : cands) {
         int m = 0;
         for (const auto& at : tracks) {
@@ -297,10 +305,51 @@ int run_calibrate(const cdr::Config& cfg) {
                              at.index == 1, at.index == n, off, c1, c2);
             if (in(db[at.index - 1], c1) || in(db[at.index - 1], c2)) ++m;
         }
-        if (m > bestm) { second = bestm; bestm = m; best = off; }
-        else if (m > second) second = m;
+        scored.push_back({ off, m });
+        if (m > bestm) { bestm = m; best = off; }
     }
     fs::remove_all(dir, ec);
+
+    // Alle Kandidaten zeigen — bei Mehrdeutigkeit will man sehen, worum es
+    // geht, statt nur "nicht eindeutig" zu lesen.
+    std::fprintf(stderr, "Ergebnis je Kandidat:\n");
+    for (const auto& sc : scored)
+        std::fprintf(stderr, "  %+6d : %2d/%d Tracks%s\n", sc.first, sc.second, n,
+                     (known && sc.first == *known) ? "   ← Wert aus der Registry" : "");
+
+    // Wieviele erreichen den Bestwert? Mehr als einer heisst: Die Disc allein
+    // kann die Frage nicht beantworten. Das passiert bei beliebten Discs, weil
+    // in AccurateRip auch die Pruefsummen falsch kalibrierter Laufwerke
+    // stehen — der Sweep findet sie und kann sie nicht unterscheiden.
+    int tied = 0;
+    for (const auto& sc : scored) if (sc.second == bestm) ++tied;
+
+    if (tied > 1) {
+        // Steht einer der gleichauf liegenden Kandidaten in der Registry, ist
+        // die Sache entschieden: Dieser Wert stammt aus vielen unabhaengigen
+        // Meldungen, die anderen aus dieser einen Disc.
+        bool resolved = false;
+        if (known) {
+            for (const auto& sc : scored)
+                if (sc.first == *known && sc.second == bestm) {
+                    best = *known; resolved = true; break;
+                }
+        }
+        if (resolved) {
+            std::fprintf(stderr,
+                "%d Versaetze passen gleich gut — die Registry entscheidet "
+                "zugunsten von %+d.\n", tied, best);
+        } else {
+            std::fprintf(stderr,
+                "Nicht gespeichert: %d Versaetze erklaeren die Disc gleich gut "
+                "(je %d/%d Tracks), und keiner davon steht in der Registry.\n"
+                "Das passiert bei viel gerippten Discs: In AccurateRip stehen "
+                "auch die Pruefsummen falsch kalibrierter Laufwerke, und der "
+                "Suchlauf kann sie nicht unterscheiden. Bitte eine andere, "
+                "moeglichst gewoehnliche CD verwenden.\n", tied, bestm, n);
+            return 3;
+        }
+    }
 
     std::fprintf(stderr,
         "Bester Offset: %d  (%d/%d Tracks gegen AccurateRip bestätigt)\n",
@@ -322,34 +371,21 @@ int run_calibrate(const cdr::Config& cfg) {
             "einem gaengigen Album wiederholen.\n", bestm, n, need);
         return 3;
     }
-    // Ein klarer Sieger sollte sich deutlich absetzen. Liegt der zweitbeste
-    // Kandidat gleichauf, ist die Messung nicht eindeutig.
-    if (second >= bestm && cands.size() > 1) {
-        std::fprintf(stderr,
-            "Nicht gespeichert: mindestens zwei Versaetze erklaeren die Disc "
-            "gleich gut (%d Tracks). Kein eindeutiges Ergebnis.\n", bestm);
-        return 3;
-    }
     // Gegenprobe an der Registry: Dort steht der aus vielen Meldungen
     // gemittelte Wert fuer dieses Laufwerksmodell. Weicht die eigene Messung
     // davon ab, ist die eigene mit hoher Wahrscheinlichkeit die falsche —
     // ein Modell hat genau einen Offset, das ist Bauart, keine Streuung.
-    if (!cfg.registry_url.empty()) {
-        if (auto known = cdr::registry_lookup_offset(cfg.registry_url, did,
-                                                     cfg.mb_useragent)) {
-            if (*known != best) {
-                std::fprintf(stderr,
-                    "Nicht gespeichert: Die Registry kennt fuer \"%s\" den "
-                    "Offset %+d, gemessen wurden %+d.\n"
-                    "Ein Laufwerksmodell hat genau einen Offset — hier stimmt "
-                    "etwas nicht. Der Registry-Wert wird ohnehin automatisch "
-                    "verwendet; eine Kalibrierung ist damit nicht noetig.\n",
-                    did.c_str(), *known, best);
-                return 3;
-            }
-            std::fprintf(stderr, "Deckt sich mit der Registry (%+d). \n", *known);
-        }
+    if (known && *known != best) {
+        std::fprintf(stderr,
+            "Nicht gespeichert: Die Registry kennt fuer \"%s\" den Offset "
+            "%+d, gemessen wurden %+d.\n"
+            "Ein Laufwerksmodell hat genau einen Offset — hier stimmt etwas "
+            "nicht. Der Registry-Wert wird ohnehin automatisch verwendet; "
+            "eine Kalibrierung ist damit nicht noetig.\n",
+            did.c_str(), *known, best);
+        return 3;
     }
+    if (known) std::fprintf(stderr, "Deckt sich mit der Registry (%+d).\n", *known);
     if (cdr::save_drive_offset(did, best))
         std::fprintf(stderr, "Gespeichert: \"%s\" → %d in %s\n",
                      did.c_str(), best, cdr::drive_offsets_path().c_str());

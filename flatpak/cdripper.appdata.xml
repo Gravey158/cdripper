@@ -26,6 +26,12 @@
   <developer_name>Dennis</developer_name>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="1.12.1" date="2026-07-26">
+      <description>
+        <p>Die Kalibrierung zeigt jetzt alle gefundenen Versätze mit ihrer Trefferzahl an, statt nur den Sieger zu nennen. Und wenn mehrere Versätze dieselbe Disc gleich gut erklären, entscheidet der Wert aus der Offset-Registry — sofern er unter den Kandidaten ist.</p>
+        <p>Der Fall ist keine Seltenheit: Bei viel gerippten Discs stehen in AccurateRip auch die Prüfsummen falsch kalibrierter Laufwerke, und der Suchlauf kann sie nicht auseinanderhalten. Bei einer Zusammenstellung bestätigten fünf verschiedene Versätze alle siebzehn Titel. Die Disc allein kann die Frage dann nicht beantworten — ein Wert aus vielen unabhängigen Meldungen schon.</p>
+      </description>
+    </release>
     <release version="1.12.0" date="2026-07-26">
       <description>
         <p>Die Kalibrierung nimmt ein Ergebnis nicht mehr ungeprüft an. Bisher wurde der gemessene Versatz gespeichert, sobald ein einziger Titel gegen AccurateRip bestätigte — bei einer CD mit siebzehn Titeln also einer von siebzehn. Der Suchlauf probiert 3001 Versätze durch, und gerade bei Zusammenstellungen liegen dieselben Titel vom selben Master auf vielen anderen Discs; dann passt eine Prüfsumme auch bei völlig falschem Versatz. Auf diese Weise kam für ein Laufwerk einmal −936 heraus, wo +6 richtig ist — mit der Folge, dass jeder Rip systematisch verschoben gewesen wäre, ohne dass es auffällt.</p>
