@@ -7,6 +7,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>   // setenv/_putenv_s
 #include <fstream>
 #include <string>
 #include <system_error>
@@ -567,8 +568,19 @@ int main() {
             ("cdr-log-" + std::to_string(::getpid()));
         fs::remove_all(home, ec);
         fs::create_directories(home, ec);
+        // Das Protokollverzeichnis leitet die Engine aus der Umgebung ab —
+        // auf Windows aus LOCALAPPDATA, sonst aus XDG_DATA_HOME/HOME. Und
+        // setenv() kennt die Windows-Laufzeit nicht.
+#ifdef _WIN32
+        _putenv_s("LOCALAPPDATA", home.string().c_str());
+        const fs::path lf = home / "cdripper" / "logs" / "cdripper.log";
+#else
         ::setenv("HOME", home.string().c_str(), 1);
+        // XDG_DATA_HOME hat Vorrang vor HOME — sonst schreibt der Test in das
+        // echte Verzeichnis des Anwenders, wenn die Variable gesetzt ist.
+        ::unsetenv("XDG_DATA_HOME");
         const fs::path lf = home / ".local/share/cdripper/cdripper.log";
+#endif
 
         auto read_log = [&]() -> std::string {
             std::ifstream f(lf);
