@@ -1660,8 +1660,8 @@ Off: every drive rips only the disc currently inserted — each disc card then h
         <translation>Delete the selected entry (to allow recalibration)</translation>
     </message>
     <message>
-        <source>https://or1-9c4k.x2-pandora.de  (leer = aus)</source>
-        <translation>https://or1-9c4k.x2-pandora.de  (empty = off)</translation>
+        <source>https://registry.example.org  (leer = aus)</source>
+        <translation>https://registry.example.org  (empty = off)</translation>
     </message>
     <message>
         <source>Eigenen kalibrierten Offset teilen (nur AccurateRip-bestätigt)</source>

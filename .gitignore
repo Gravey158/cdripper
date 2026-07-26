@@ -1,6 +1,8 @@
 build/
-build-mac/
-build-flatpak/
+# Alle Build-Verzeichnisse, auch beiseitegelegte (build-mac.old o. ä.) —
+# ein solcher Ordner hat sich schon einmal ueber `git add -A` mit 739
+# Dateien in einen Commit geschmuggelt.
+build-*/
 config.ini
 *.o
 cdripper

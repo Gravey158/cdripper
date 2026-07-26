@@ -26,6 +26,12 @@
   <developer_name>Dennis</developer_name>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="1.10.1" date="2026-07-26">
+      <description>
+        <p>Serveradresse, Benutzername und die Kontaktadresse für MusicBrainz sind nicht mehr vorbelegt. Bisher standen dort die Werte meiner eigenen Installation — für jeden anderen schlicht falsch, und zwar ohne dass es auffällt.</p>
+        <p>Damit ein leeres Ziel nicht zum Reinfall wird, prüft die Anwendung vor dem Start, ob die gewählte Ablage vollständig eingerichtet ist, und sagt genau, was fehlt. Vorher wurde nur nach dem WebDAV-Passwort gefragt — auch dann, wenn das Ziel ein lokaler Ordner war. Eine fehlende Serveradresse dagegen fiel gar nicht auf: Sie wurde erst beim Hochladen zum Fehler, also nachdem die ganze CD gelesen und umgewandelt war.</p>
+      </description>
+    </release>
     <release version="1.10.0" date="2026-07-26">
       <description>
         <p>Test &amp; Copy: Jeder Track lässt sich auf Wunsch zweimal lesen und die Prüfsummen beider Durchgänge vergleichen. Stimmen sie überein, ist der Rip bewiesen — auch ohne AccurateRip. Genau das fehlte bisher bei Maxis, Promos und Samplern, die in AccurateRip überhaupt nicht stehen und deshalb nie bestätigt werden konnten. Der Rip dauert dafür ungefähr doppelt so lange; die Einstellung ist deshalb ab Werk aus.</p>

@@ -23,7 +23,7 @@ namespace cdr {
 //   PATCH  kleiner Bugfix / kleine Änderung
 // Bei jeder veröffentlichten Änderung hier hochzählen und im lokalen
 // Git-Repo einen passenden Tag setzen (git tag -a vX.Y.Z).
-constexpr const char* VERSION = "1.10.0";
+constexpr const char* VERSION = "1.10.1";
 
 struct Config {
     std::string device        = "/dev/sr0";   // primäres/Single-Laufwerk
@@ -34,12 +34,19 @@ struct Config {
         return devices.empty() ? std::vector<std::string>{ device }
                                : devices;
     }
-    std::string nextcloud_url = "https://n1-k58z.x2-pandora.de";
-    std::string webdav_user   = "cabanskid";
+    // Ablageziel — ab Werk leer. Die Adresse eines fremden Servers als
+    // Vorgabe auszuliefern wäre schlicht falsch, und beim allerersten Start
+    // fragt die Oberfläche ohnehin danach (missingTargetSetting()).
+    std::string nextcloud_url;
+    std::string webdav_user;
     std::string webdav_pass;            // NIE im Code — Config-Datei/Env
     std::string music_root    = "Music";
     std::string tmpdir        = "/tmp/cdripper";
-    std::string mb_useragent  = "athena-cdripper/1.0 ( gravemind158@gmail.com )";
+    // MusicBrainz verlangt einen aussagekräftigen User-Agent mit Kontakt-
+    // möglichkeit. Die Projektseite erfüllt das und verrät niemandes Adresse;
+    // wer will, trägt in den Einstellungen die eigene ein.
+    std::string mb_useragent  =
+        "cdripper/1.0 ( https://github.com/Gravey158/cdripper )";
     // AcoustID/Chromaprint API-Key (kostenlos: acoustid.org/new-application).
     // Leer = akustischer Fingerprint-Fallback aus.
     std::string acoustid_key;
@@ -99,9 +106,10 @@ struct Config {
     std::string smb_user;               // smb:    user (leer = guest)
     std::string smb_pass;               // smb:    Passwort (Secret!)
 
-    // Offset-Registry (T5) — Cluster-App or1-9c4k. Leer = komplett aus.
-    // Privacy: beide submit-Flags standardmäßig AUS (Opt-in).
-    std::string registry_url;           // z.B. https://or1-9c4k.x2-pandora.de
+    // Offset-Registry: eigene Instanz, die Laufwerks-Offsets und den
+    // CD-Zustands-Zensus sammelt (images/offset-registry im Projekt).
+    // Leer = komplett aus. Privacy: alle submit-Flags sind Opt-in.
+    std::string registry_url;           // z.B. https://registry.example.org
     bool        registry_submit = false;  // eigenen kalibrierten Offset teilen
     bool        registry_stats  = false;  // anonyme Rip-Statistik melden
     bool        registry_condition = false; // Album-Zustand + Cover-Thumb für
@@ -415,7 +423,8 @@ std::optional<int> calibrate_offset_from_wavs(
 std::vector<std::string> list_optical_devices();
 
 // ── Offset-Registry-Client (T5) ────────────────────────────────────────────────
-// Cluster-App (or1-9c4k.x2-pandora.de). Alles best-effort, nie werfend; bei
+// Spricht mit einer selbst betriebenen Registry. Alles best-effort, nie
+// werfend; bei
 // leerer base_url No-Op. drive_model = drive_id() (Vendor+Model, maschinen-
 // übergreifend stabil → portabel zwischen Laufwerken/Rechnern).
 std::optional<int> registry_lookup_offset(const std::string& base_url,

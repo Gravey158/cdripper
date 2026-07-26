@@ -249,6 +249,43 @@ static QString mmss(double s) {
     return QString("%1:%2").arg(t / 60).arg(t % 60, 2, 10, QChar('0'));
 }
 
+// Ist das gewählte Ablageziel vollständig eingerichtet? Leerer Rückgabewert
+// heißt ja; sonst steht darin, was fehlt und wo man es einträgt.
+//
+// Die Prüfung gehört vor den Start, nicht mitten in den Rip: Bis zum ersten
+// Upload ist eine CD durchgelesen und encodiert, und die Meldung, die dann
+// käme, wäre ein HTTP-Fehler auf eine unvollständig zusammengesetzte Adresse.
+// Ohne voreingestellte Serverdaten — und die gibt es ab Werk bewusst nicht —
+// ist das der Normalfall beim allerersten Start, nicht der Ausnahmefall.
+static QString missingTargetSetting(const cdr::Config& c) {
+    const auto need = [](const std::string& v) { return v.empty(); };
+    if (c.upload_backend == "webdav") {
+        if (need(c.nextcloud_url) || need(c.webdav_user))
+            return QObject::tr(
+                "Für den Upload fehlen Serveradresse und/oder Benutzername.\n\n"
+                "Einstellungen → Upload — oder „Dry-Run“ ankreuzen, dann wird "
+                "nur gerippt und nichts übertragen.");
+        if (need(c.webdav_pass))
+            return QObject::tr(
+                "Kein WebDAV-Passwort gesetzt.\n\n"
+                "Einstellungen → Upload, alternativ webdav_pass in der Config "
+                "(chmod 600) oder die Umgebungsvariable CDRIPPER_WEBDAV_PASS.");
+    } else if (c.upload_backend == "local") {
+        if (need(c.local_base))
+            return QObject::tr("Kein Zielordner gewählt.\n\n"
+                               "Einstellungen → Upload → Zielbasis.");
+    } else if (c.upload_backend == "ssh") {
+        if (need(c.ssh_host) || need(c.ssh_base))
+            return QObject::tr("Für SSH fehlen Host und/oder Basispfad.\n\n"
+                               "Einstellungen → Upload.");
+    } else if (c.upload_backend == "smb") {
+        if (need(c.smb_url))
+            return QObject::tr("Keine SMB-Freigabe angegeben.\n\n"
+                               "Einstellungen → Upload (smb://host/share/…).");
+    }
+    return QString();
+}
+
 // Wird beim Anlegen des MainWindow-Tray-Icons gesetzt → notify() kann darüber
 // plattformübergreifend (Linux/mac/Windows) Benachrichtigungen zeigen.
 static QSystemTrayIcon* g_notify_tray = nullptr;
@@ -2433,6 +2470,15 @@ public:
             [this] { for (auto* p : panels_) p->scan(); });
         connect(startB, &QPushButton::clicked, this,
             [this] {
+                // Dieselbe Ziel-Vorprüfung wie im Einzelfenster: hier wiegt
+                // sie schwerer, weil sonst gleich mehrere Laufwerke parallel
+                // ins Leere rippen würden.
+                if (!base_.dry_run) {
+                    if (QString m = missingTargetSetting(base_); !m.isEmpty()) {
+                        QMessageBox::warning(this, tr("Ziel unvollständig"), m);
+                        return;
+                    }
+                }
                 const bool once = !turbo_->isChecked();
                 log_->appendPlainText(once
                     ? tr("[start] Einzeldurchlauf — je eine CD "
@@ -3599,11 +3645,15 @@ void MainWindow::onStart() {
     { QString d = device_->currentData().toString();
       if (!d.isEmpty()) cfg_.device = d.toStdString(); }
     cfg_.dry_run = dryRun_->isChecked();
-    if (cfg_.webdav_pass.empty() && !cfg_.dry_run) {
-        QMessageBox::warning(this, tr("Kein Passwort"),
-            tr("Kein WebDAV-Passwort gesetzt.\nSetze webdav_pass in der Config "
-            "(chmod 600) oder Env CDRIPPER_WEBDAV_PASS — oder nutze Dry-Run."));
-        return;
+    // Vollständigkeit des Ablageziels prüfen, nicht bloß das WebDAV-Passwort:
+    // die alte Fassung fragte auch dann danach, wenn das Ziel ein lokaler
+    // Ordner war, und schwieg umgekehrt bei fehlender Serveradresse — daraus
+    // wurde dann eine kaputte URL mitten im Rip statt einer Ansage vorher.
+    if (!cfg_.dry_run) {
+        if (QString m = missingTargetSetting(cfg_); !m.isEmpty()) {
+            QMessageBox::warning(this, tr("Ziel unvollständig"), m);
+            return;
+        }
     }
     fillingTable_ = true;
     table_->setRowCount(0);
@@ -5253,7 +5303,7 @@ SettingsDialog::SettingsDialog(const cdr::Config& c, QString cfgPath,
         auto* f = new QFormLayout;
         regUrl_ = new QLineEdit(S(c.registry_url));
         regUrl_->setPlaceholderText(tr(
-            "https://or1-9c4k.x2-pandora.de  (leer = aus)"));
+            "https://registry.example.org  (leer = aus)"));
         regSubmit_ = new QCheckBox(
             tr("Eigenen kalibrierten Offset teilen (nur AccurateRip-bestätigt)"));
         regSubmit_->setChecked(c.registry_submit);
