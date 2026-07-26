@@ -1,6 +1,7 @@
 // cli.cpp — Headless-Modus: gleiche Pipeline, Status auf stderr.
 #include "pipeline.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -284,7 +285,9 @@ int run_calibrate(const cdr::Config& cfg) {
         return 3;
     }
 
-    int best = cands[0], bestm = -1;
+    std::fprintf(stderr, "%zu Kandidat(en) im Sweep — pruefe jeden gegen "
+                 "alle Tracks …\n", cands.size());
+    int best = cands[0], bestm = -1, second = -1;
     for (int off : cands) {
         int m = 0;
         for (const auto& at : tracks) {
@@ -294,14 +297,59 @@ int run_calibrate(const cdr::Config& cfg) {
                              at.index == 1, at.index == n, off, c1, c2);
             if (in(db[at.index - 1], c1) || in(db[at.index - 1], c2)) ++m;
         }
-        if (m > bestm) { bestm = m; best = off; }
+        if (m > bestm) { second = bestm; bestm = m; best = off; }
+        else if (m > second) second = m;
     }
     fs::remove_all(dir, ec);
 
     std::fprintf(stderr,
         "Bester Offset: %d  (%d/%d Tracks gegen AccurateRip bestätigt)\n",
         best, bestm, n);
-    if (bestm <= 0) { std::fprintf(stderr, "Nicht gespeichert.\n"); return 3; }
+
+    // ── Plausibilitaet ────────────────────────────────────────────────────
+    // Frueher wurde ab EINEM bestaetigten Track gespeichert. Das reicht
+    // nicht: Der Sweep probiert 3001 Versaetze, und gerade bei Samplern
+    // liegen dieselben Titel vom selben Master auf vielen anderen Discs —
+    // dann passt eine Pruefsumme auch bei voellig falschem Versatz. Genau so
+    // kam fuer ein GP60NB60 einmal -936 heraus, wo +6 richtig ist.
+    // Verlangt werden jetzt mindestens 3 Tracks UND ein Viertel der Disc.
+    const int need = std::max(3, (n + 3) / 4);
+    if (bestm < need) {
+        std::fprintf(stderr,
+            "Nicht gespeichert: nur %d von %d Tracks bestaetigt, noetig sind "
+            "mindestens %d.\n"
+            "Das ist typisch fuer Sampler und seltene Pressungen — bitte mit "
+            "einem gaengigen Album wiederholen.\n", bestm, n, need);
+        return 3;
+    }
+    // Ein klarer Sieger sollte sich deutlich absetzen. Liegt der zweitbeste
+    // Kandidat gleichauf, ist die Messung nicht eindeutig.
+    if (second >= bestm && cands.size() > 1) {
+        std::fprintf(stderr,
+            "Nicht gespeichert: mindestens zwei Versaetze erklaeren die Disc "
+            "gleich gut (%d Tracks). Kein eindeutiges Ergebnis.\n", bestm);
+        return 3;
+    }
+    // Gegenprobe an der Registry: Dort steht der aus vielen Meldungen
+    // gemittelte Wert fuer dieses Laufwerksmodell. Weicht die eigene Messung
+    // davon ab, ist die eigene mit hoher Wahrscheinlichkeit die falsche —
+    // ein Modell hat genau einen Offset, das ist Bauart, keine Streuung.
+    if (!cfg.registry_url.empty()) {
+        if (auto known = cdr::registry_lookup_offset(cfg.registry_url, did,
+                                                     cfg.mb_useragent)) {
+            if (*known != best) {
+                std::fprintf(stderr,
+                    "Nicht gespeichert: Die Registry kennt fuer \"%s\" den "
+                    "Offset %+d, gemessen wurden %+d.\n"
+                    "Ein Laufwerksmodell hat genau einen Offset — hier stimmt "
+                    "etwas nicht. Der Registry-Wert wird ohnehin automatisch "
+                    "verwendet; eine Kalibrierung ist damit nicht noetig.\n",
+                    did.c_str(), *known, best);
+                return 3;
+            }
+            std::fprintf(stderr, "Deckt sich mit der Registry (%+d). \n", *known);
+        }
+    }
     if (cdr::save_drive_offset(did, best))
         std::fprintf(stderr, "Gespeichert: \"%s\" → %d in %s\n",
                      did.c_str(), best, cdr::drive_offsets_path().c_str());

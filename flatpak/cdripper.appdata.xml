@@ -26,6 +26,12 @@
   <developer_name>Dennis</developer_name>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="1.12.0" date="2026-07-26">
+      <description>
+        <p>Die Kalibrierung nimmt ein Ergebnis nicht mehr ungeprüft an. Bisher wurde der gemessene Versatz gespeichert, sobald ein einziger Titel gegen AccurateRip bestätigte — bei einer CD mit siebzehn Titeln also einer von siebzehn. Der Suchlauf probiert 3001 Versätze durch, und gerade bei Zusammenstellungen liegen dieselben Titel vom selben Master auf vielen anderen Discs; dann passt eine Prüfsumme auch bei völlig falschem Versatz. Auf diese Weise kam für ein Laufwerk einmal −936 heraus, wo +6 richtig ist — mit der Folge, dass jeder Rip systematisch verschoben gewesen wäre, ohne dass es auffällt.</p>
+        <p>Jetzt müssen mindestens drei Titel und ein Viertel der Disc bestätigen. Erklären zwei verschiedene Versätze die Disc gleich gut, gilt das Ergebnis als nicht eindeutig. Und wenn die Offset-Registry für das Laufwerksmodell bereits einen Wert kennt, der abweicht, wird nicht gespeichert: Ein Modell hat genau einen Versatz, das ist Bauart und keine Streuung — der Wert aus vielen Meldungen ist belastbarer als eine einzelne Messung. In allen drei Fällen steht im Protokollfenster, woran es lag.</p>
+      </description>
+    </release>
     <release version="1.11.2" date="2026-07-26">
       <description>
         <p>Fehlgeschlagene Nebenübertragungen bleiben nicht länger stumm. Songtext, Cover, Zustandsbericht und Scan-Karte wurden bisher in einem leeren Fangblock abgelegt: Schlug die Übertragung fehl, ging das Programm wortlos weiter — bei Zustandsbericht und Scan-Karte meldete es sogar Erfolg. Jetzt steht der Grund im Protokoll und, wo es den Anwender betrifft, auch im Fenster.</p>
