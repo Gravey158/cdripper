@@ -64,19 +64,32 @@ mkdir -p "$DIST"
 cp "$BUILD/cdripper.exe" "$DIST/"
 
 echo ">>> DLL-Abhängigkeiten auflösen"
+# Auf einen Pfadpräfix wie /ucrt64/ darf man sich nicht verlassen: ldd gibt je
+# nach MSYS2-Installation mal /ucrt64/bin/..., mal C:/msys64/ucrt64/bin/... aus
+# — in der CI liegt die Umgebung unter D:\a\_temp\msys64. Deshalb wird
+# ausgeschlossen statt eingeschlossen: alles mitnehmen, was NICHT aus dem
+# Windows-Systemverzeichnis kommt. Und die Pipe darf nicht leer laufen: mit
+# `set -e` beendet ein grep ohne Treffer das ganze Skript.
 copy_deps() {
-  local target="$1" seen="$2"
-  ldd "$target" 2>/dev/null | awk '{print $3}' | grep -i '^/ucrt64/' | \
-  while read -r dll; do
-    local base; base=$(basename "$dll")
+  local target="$1"
+  local deps
+  deps=$(ldd "$target" 2>/dev/null | awk '{print $3}' \
+         | grep -viE '/(WINDOWS|Windows|windows)/' | grep -i '\.dll$' || true)
+  [ -z "$deps" ] && return 0
+  local dll base
+  while IFS= read -r dll; do
+    [ -z "$dll" ] && continue
+    [ -f "$dll" ] || continue
+    base=$(basename "$dll")
     if [ ! -f "$DIST/$base" ]; then
       cp "$dll" "$DIST/"
-      # Rekursiv: Qt6Gui zieht selbst wieder Bibliotheken nach.
-      copy_deps "$dll" "$seen"
+      copy_deps "$dll"          # Qt6Gui zieht selbst wieder Bibliotheken nach
     fi
-  done
+  done <<< "$deps"              # kein Pipe-Subshell: Rekursion braucht den Zustand
+  return 0
 }
-copy_deps "$DIST/cdripper.exe" ""
+copy_deps "$DIST/cdripper.exe"
+echo "    $(find "$DIST" -maxdepth 1 -name '*.dll' | wc -l | tr -d ' ') DLLs"
 
 # Qt-Plugins: kommen nicht über ldd, weil sie zur Laufzeit geladen werden.
 # Ohne das Plattform-Plugin startet die Anwendung mit "could not find or
@@ -89,7 +102,7 @@ for grp in platforms styles imageformats iconengines tls; do
     cp "$QT_PLUGINS/$grp"/*.dll "$DIST/$grp/" 2>/dev/null || true
     # Auch die Plugins brauchen ihre eigenen Bibliotheken.
     for pl in "$DIST/$grp"/*.dll; do
-      [ -f "$pl" ] && copy_deps "$pl" ""
+      [ -f "$pl" ] && copy_deps "$pl"
     done
   fi
 done
@@ -115,8 +128,12 @@ fi
 # Externe Werkzeuge (flac, metaflac) mitgeben, damit das Encodieren ohne
 # separate Installation läuft.
 for t in flac metaflac; do
-  [ -f "/ucrt64/bin/$t.exe" ] && cp "/ucrt64/bin/$t.exe" "$DIST/" && \
-    copy_deps "$DIST/$t.exe" ""
+  if [ -f "/ucrt64/bin/$t.exe" ]; then
+    cp "/ucrt64/bin/$t.exe" "$DIST/"
+    copy_deps "$DIST/$t.exe"
+  else
+    echo "    Hinweis: $t.exe nicht gefunden — Encoden braucht es zur Laufzeit." >&2
+  fi
 done
 
 echo ">>> Paket schnüren"
