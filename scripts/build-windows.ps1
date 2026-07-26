@@ -51,7 +51,14 @@ cmake --build $build --config Release -j
 $qtBin = "$vcpkgRoot\installed\x64-windows\tools\Qt6\bin"
 if (Test-Path "$qtBin\windeployqt.exe") {
     Write-Host ">>> windeployqt"
-    & "$qtBin\windeployqt.exe" --release --no-translations --no-system-d3d-compiler `
+    # Die eigenen Übersetzungen stecken als Ressource im Binary, die braucht
+    # windeployqt nicht. Qts EIGENE Kataloge (qtbase_de/_en) aber schon: die
+    # lädt main.cpp zusätzlich, damit Standarddialoge — „Öffnen", „Abbrechen",
+    # die Knöpfe der Nachrichtenfenster — in der gewählten Sprache erscheinen.
+    # Mit --no-translations blieben genau die englisch, während der Rest der
+    # Oberfläche deutsch ist.
+    & "$qtBin\windeployqt.exe" --release --translations de,en `
+        --no-system-d3d-compiler `
         --no-quick-import "$build\Release\cdripper.exe"
 }
 
