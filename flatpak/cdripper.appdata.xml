@@ -26,6 +26,11 @@
   <developer_name>Dennis</developer_name>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="1.10.2" date="2026-07-26">
+      <description>
+        <p>Das Kalibrieren eines Laufwerks über die Einstellungen brach sofort mit „CD Ripper läuft bereits" ab. Ursache: Für die Kalibrierung startet die Anwendung sich selbst noch einmal — und der Schutz, der ein zweites Fenster verhindert, wies dabei ihr eigenes Kind ab. Aus der laufenden Anwendung heraus konnte man also nie kalibrieren. Ein Wettlauf um das Laufwerk entsteht durch die Ausnahme nicht: Die Einstellungen lassen sich ohnehin nicht öffnen, solange irgendwo ein Lauf aktiv ist.</p>
+      </description>
+    </release>
     <release version="1.10.1" date="2026-07-26">
       <description>
         <p>Serveradresse, Benutzername und die Kontaktadresse für MusicBrainz sind nicht mehr vorbelegt. Bisher standen dort die Werte meiner eigenen Installation — für jeden anderen schlicht falsch, und zwar ohne dass es auffällt.</p>

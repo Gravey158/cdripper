@@ -230,8 +230,19 @@ int main(int argc, char** argv) {
     // Lock (Crash) wird automatisch erkannt -> kein manuelles Aufraeumen.
     // (Nur HAVE_QT-Builds; der ausgelieferte Flatpak ist immer Qt -> deckt
     //  GUI, CLI-Rip und --calibrate ab. Lock haelt bis main() zurueckkehrt.)
+    //
+    // Ausnahme fuer den eigenen Nachwuchs: Die Kalibrierung startet dieses
+    // Binary noch einmal mit --calibrate (SettingsDialog::onCalibrate). Die
+    // Oberflaeche haelt den Lock aber selbst, also wies der Guard das eigene
+    // Kind ab — "CD Ripper laeuft bereits (PID 2)", und Kalibrieren aus der
+    // laufenden App konnte gar nicht funktionieren. Ein Wettlauf ums Laufwerk
+    // entsteht dadurch nicht: Die Einstellungen lassen sich nicht einmal
+    // oeffnen, solange irgendwo ein Lauf aktiv ist (anyRipActive()).
+    // Umgebungsvariable statt Kommandozeilenschalter, damit sie niemand von
+    // Hand mitgibt und den Schutz aushebelt.
     QLockFile cdr_single_instance(QDir::tempPath() + "/cdripper-single-instance.lock");
-    if (!cdr_single_instance.tryLock(0)) {
+    const bool is_own_child = std::getenv("CDRIPPER_CHILD") != nullptr;
+    if (!is_own_child && !cdr_single_instance.tryLock(0)) {
         qint64 _pid = 0; QString _host, _appname;
         cdr_single_instance.getLockInfo(&_pid, &_host, &_appname);
         const std::string _msg =

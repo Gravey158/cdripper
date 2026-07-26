@@ -5735,6 +5735,11 @@ void SettingsDialog::onCalibrate() {
     QStringList args{ "--calibrate", "--device",
                       calibDev_->currentData().toString() };
     if (!cfgPath_.isEmpty()) { args << "--config" << cfgPath_; }
+    // Als eigenen Kindprozess kennzeichnen, sonst weist der Einzelinstanz-
+    // Schutz in main() ihn ab — wir halten den Lock ja selbst.
+    auto env = QProcessEnvironment::systemEnvironment();
+    env.insert("CDRIPPER_CHILD", "1");
+    proc->setProcessEnvironment(env);
     proc->start(QCoreApplication::applicationFilePath(), args);
     dlg->exec();
     dlg->deleteLater();
