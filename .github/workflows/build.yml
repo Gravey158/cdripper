@@ -69,7 +69,11 @@ jobs:
         run: ./scripts/build-mac.sh
 
       - name: Unit-Tests
-        run: ./build-mac/cdripper_tests
+        # cdripper_tests ist EXCLUDE_FROM_ALL — der normale Build erzeugt es
+        # nicht, es muss eigens angefordert werden.
+        run: |
+          cmake --build build-mac --target cdripper_tests
+          ./build-mac/cdripper_tests
 
       - uses: actions/upload-artifact@v7
         with:

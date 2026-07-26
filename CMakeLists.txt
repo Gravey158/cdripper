@@ -108,6 +108,14 @@ endif()
 target_include_directories(cdripper PRIVATE
   ${CDIO_INCLUDE_DIRS} ${CDDA_INCLUDE_DIRS}
   ${PARANOIA_INCLUDE_DIRS} ${DISCID_INCLUDE_DIRS})
+# Suchpfade der pkg-config-Module mitgeben, nicht nur die Bibliotheksnamen.
+# Auf Intel-Macs faellt das nicht auf, weil Homebrew dort nach /usr/local/lib
+# installiert — das durchsucht der Linker ohnehin. Auf Apple Silicon liegt es
+# unter /opt/homebrew/lib, und dort schaut er von sich aus nicht hin:
+# "ld: library 'cdio' not found", obwohl die Datei da ist.
+target_link_directories(cdripper PRIVATE
+  ${CDIO_LIBRARY_DIRS} ${CDDA_LIBRARY_DIRS}
+  ${PARANOIA_LIBRARY_DIRS} ${DISCID_LIBRARY_DIRS})
 target_link_libraries(cdripper PRIVATE
   ${CDIO_LIBRARIES} ${CDDA_LIBRARIES} ${PARANOIA_LIBRARIES}
   ${DISCID_LIBRARIES} CURL::libcurl)
@@ -197,6 +205,9 @@ add_executable(cdripper_tests EXCLUDE_FROM_ALL tests/tests.cpp engine.cpp)
 target_include_directories(cdripper_tests PRIVATE
   ${CDIO_INCLUDE_DIRS} ${CDDA_INCLUDE_DIRS}
   ${PARANOIA_INCLUDE_DIRS} ${DISCID_INCLUDE_DIRS})
+target_link_directories(cdripper_tests PRIVATE
+  ${CDIO_LIBRARY_DIRS} ${CDDA_LIBRARY_DIRS}
+  ${PARANOIA_LIBRARY_DIRS} ${DISCID_LIBRARY_DIRS})
 target_link_libraries(cdripper_tests PRIVATE
   ${CDIO_LIBRARIES} ${CDDA_LIBRARIES} ${PARANOIA_LIBRARIES}
   ${DISCID_LIBRARIES} CURL::libcurl Threads::Threads)
