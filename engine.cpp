@@ -2208,7 +2208,11 @@ std::vector<std::string> caa_image_urls(const std::string& rid,
                 u = jstr(img["thumbnails"], "large");
             if (!u.empty()) v.push_back(u);
         }
-    } catch (...) {}
+    } catch (const std::exception& e) {
+        // Unlesbare Antwort ist kein Grund abzubrechen — aber der Grund,
+        // warum keine Cover angeboten werden, gehoert ins Protokoll.
+        CDR_WARN("cover", std::string("Cover-Art-Antwort unlesbar: ") + e.what());
+    }
     return v;
 }
 
@@ -2265,7 +2269,9 @@ static std::string mb_release_group_id(const std::string& rid,
         json j = json::parse(*body);
         if (j.contains("release-group"))
             return jstr(j["release-group"], "id");
-    } catch (...) {}
+    } catch (const std::exception& e) {
+        CDR_WARN("mb", std::string("Release-Group-Antwort unlesbar: ") + e.what());
+    }
     return "";
 }
 
@@ -3007,7 +3013,9 @@ std::optional<int> registry_lookup_offset(const std::string& base_url,
         json j = json::parse(*body);
         if (j.contains("offset") && j["offset"].is_number_integer())
             return j["offset"].get<int>();
-    } catch (...) {}
+    } catch (const std::exception& e) {
+        CDR_WARN("registry", std::string("Offset-Antwort unlesbar: ") + e.what());
+    }
     return std::nullopt;
 }
 
@@ -3138,6 +3146,8 @@ void log_to_file(const std::string& line) {
         std::strftime(ts, sizeof ts, "%Y-%m-%d %H:%M:%S",
                       std::localtime(&tt));
         f << "[" << ts << "] " << line << "\n";
+    // Hier darf NICHT protokolliert werden: Das ist die Protokollfunktion
+    // selbst, ein Fehlschlag wuerde sich endlos selbst aufrufen.
     } catch (...) {}
 }
 
@@ -3154,7 +3164,7 @@ static void log_raw(const std::string& line) {
             fs::rename(lp, fs::path(dir) / "cdripper.log.1", ec);
         std::ofstream f(lp, std::ios::app);
         if (f) f << line << "\n";
-    } catch (...) {}
+    } catch (...) {}   // dito — keine Meldung aus der Protokollfunktion
 }
 
 // ── Diagnose-Protokoll ────────────────────────────────────────────────────

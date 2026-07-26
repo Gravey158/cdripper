@@ -630,13 +630,29 @@ void Pipeline::process_disc(const std::atomic<bool>& stop,
                     if (fs::exists(lrcp, le)) {           // T3: .lrc mit hoch
                         auto ls = dir_segs;
                         ls.push_back(fn.substr(0, fn.rfind('.')) + ".lrc");
+                        // Songtext-Datei: darf scheitern, ohne den Rip zu
+                        // gefaehrden — aber nicht lautlos.
                         try { with_retry([&]{ dav->put(lrcp, ls); },
-                                         "PUT-lrc", *idx); } catch (...) {}
+                                         "PUT-lrc", *idx); }
+                        catch (const std::exception& e) {
+                            CDR_WARN("upload", std::string(
+                                "Songtext nicht uebertragen: ") + e.what());
+                        } catch (...) {
+                            CDR_WARN("upload", "Songtext nicht uebertragen "
+                                               "(unbekannter Fehler)");
+                        }
                         fs::remove(lrcp, le);
                     }
                     if (!cover_done && !al.cover_jpg.empty()) {
                         auto cs = dir_segs; cs.push_back("cover.jpg");
-                        try { dav->put(al.cover_jpg, cs); } catch (...) {}
+                        try { dav->put(al.cover_jpg, cs); }
+                        catch (const std::exception& e) {
+                            CDR_WARN("upload", std::string(
+                                "Cover nicht uebertragen: ") + e.what());
+                        } catch (...) {
+                            CDR_WARN("upload", "Cover nicht uebertragen "
+                                               "(unbekannter Fehler)");
+                        }
                         cover_done = true;
                     }
                 }
@@ -1329,8 +1345,19 @@ void Pipeline::process_disc(const std::atomic<bool>& stop,
             up->ensure_dirs(segs);
             segs.push_back(sanitize(snap.artist + " - " + snap.title) +
                            ".cdripper.log");
-            up->put(rp, segs);
-            if (cb_.onLog) cb_.onLog("Rip-Report abgelegt.");
+            // Einzeln absichern: Ohne das riss ein gescheiterter Report-
+            // Upload den gesamten Abschlussblock mit — Zustandsbericht,
+            // Scan-Karte und Zensus-Meldung wurden dann uebersprungen, ohne
+            // dass irgendwo stand, warum.
+            try {
+                up->put(rp, segs);
+                if (cb_.onLog) cb_.onLog("Rip-Report abgelegt.");
+            } catch (const std::exception& e) {
+                CDR_WARN("upload", std::string(
+                    "Rip-Report nicht uebertragen: ") + e.what());
+                if (cb_.onLog) cb_.onLog(
+                    std::string("⚠ Rip-Report nicht übertragen: ") + e.what());
+            }
 
             // (A) Lokaler Zustands-Sidecar: condition.txt (+ disc-scan.svg
             // wenn ein Preflight-Scan vorliegt) ins Albumverzeichnis.
@@ -1385,14 +1412,34 @@ void Pipeline::process_disc(const std::atomic<bool>& stop,
                 auto cseg = album_segs();
                 cseg.push_back(sanitize(snap.artist + " - " + snap.title) +
                                " - disc-condition.txt");
-                try { up->put(cp, cseg); } catch (...) {}
+                // Zustandsbericht: Bisher meldete die Pipeline anschliessend
+                // "abgelegt", auch wenn die Uebertragung scheiterte.
+                try { up->put(cp, cseg); }
+                catch (const std::exception& e) {
+                    CDR_WARN("upload", std::string(
+                        "Zustandsbericht nicht uebertragen: ") + e.what());
+                    if (cb_.onLog) cb_.onLog(
+                        std::string("⚠ Zustandsbericht nicht übertragen: ") +
+                        e.what());
+                } catch (...) {
+                    CDR_WARN("upload", "Zustandsbericht nicht uebertragen");
+                }
                 if (pr_done && !pr.map.empty()) {
                     fs::path sp = work / "disc-scan.svg";
                     { std::ofstream sf(sp); sf << scan_svg(pr); }
                     auto sseg = album_segs();
                     sseg.push_back(sanitize(snap.artist + " - " +
                                    snap.title) + " - disc-scan.svg");
-                    try { up->put(sp, sseg); } catch (...) {}
+                    try { up->put(sp, sseg); }
+                    catch (const std::exception& e) {
+                        CDR_WARN("upload", std::string(
+                            "Scan-Karte nicht uebertragen: ") + e.what());
+                        if (cb_.onLog) cb_.onLog(
+                            std::string("⚠ Scan-Karte nicht übertragen: ") +
+                            e.what());
+                    } catch (...) {
+                        CDR_WARN("upload", "Scan-Karte nicht uebertragen");
+                    }
                 }
                 if (cb_.onLog) cb_.onLog("Zustands-Sidecar abgelegt.");
             }

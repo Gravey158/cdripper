@@ -26,6 +26,12 @@
   <developer_name>Dennis</developer_name>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="1.11.2" date="2026-07-26">
+      <description>
+        <p>Fehlgeschlagene Nebenübertragungen bleiben nicht länger stumm. Songtext, Cover, Zustandsbericht und Scan-Karte wurden bisher in einem leeren Fangblock abgelegt: Schlug die Übertragung fehl, ging das Programm wortlos weiter — bei Zustandsbericht und Scan-Karte meldete es sogar Erfolg. Jetzt steht der Grund im Protokoll und, wo es den Anwender betrifft, auch im Fenster.</p>
+        <p>Der Rip-Report war umgekehrt gar nicht abgesichert: Scheiterte seine Übertragung, riss sie den gesamten Abschluss mit sich — Zustandsbericht, Scan-Karte und die Meldung an den Zensus wurden übersprungen, ohne dass irgendwo stand, warum.</p>
+      </description>
+    </release>
     <release version="1.11.1" date="2026-07-26">
       <description>
         <p>Nach der ersten Kalibrierung eines Laufwerks zeigte die Liste „Kalibrierte Laufwerke" nur den Hersteller, breitgezogen über die ganze Zeile — Modell, Drive-ID und Offset schienen zu fehlen. Sie waren da, lagen aber unsichtbar unter einer zusammengezogenen Zelle: Solange keine Kalibrierung vorlag, spannte sich der Hinweis „noch keine Kalibrierung" über alle vier Spalten, und dieser Zusammenzug wurde beim Neubefüllen nicht zurückgenommen.</p>
