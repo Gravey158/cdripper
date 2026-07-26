@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
   "name": "cdripper",
-  "version-string": "1.13.0",
+  "version-string": "1.13.1",
   "description": "Audio CD ripper with MusicBrainz tagging and AccurateRip verification",
   "homepage": "https://github.com/Gravey158/cdripper",
   "license": "MIT",

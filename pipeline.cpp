@@ -8,6 +8,7 @@
 #include <ctime>
 #include <fstream>
 #include <map>
+#include <set>
 #include <memory>
 #include <sstream>
 #include <thread>
@@ -1371,8 +1372,14 @@ void Pipeline::process_disc(const std::atomic<bool>& stop,
                     : pr.quality == DiscQuality::Clean ? "sauber"
                     : pr.quality == DiscQuality::Marginal ? "grenzwertig"
                     : "stark zerkratzt";
+                // Wie beim Zensus: Totalausfaelle gehoeren mitgezaehlt,
+                // sonst behauptet der Bericht "Beschaedigte Tracks: 0" ueber
+                // eine Disc, deren erste sieben Titel gar nicht lesbar waren.
                 int dmgn; { std::lock_guard<std::mutex> l(damaged_mu_);
-                            dmgn = (int)damaged_.size(); }
+                            std::set<int> hurt;
+                            for (const auto& d : damaged_) hurt.insert(d.first);
+                            for (int t : rip_failed)       hurt.insert(t);
+                            dmgn = (int)hurt.size(); }
                 std::ostringstream cs;
                 cs << "cdripper — Disc-Zustand\n"
                    << "Album    : " << snap.artist << " — " << snap.title;
@@ -1399,6 +1406,9 @@ void Pipeline::process_disc(const std::atomic<bool>& stop,
                     cs << "\nTest & Copy: keine Prüflesung zustande gekommen";
                 }
                 cs << "\nBeschädigte Tracks: " << dmgn;
+                if (!rip_failed.empty())
+                    cs << " (davon " << rip_failed.size()
+                       << " gar nicht lesbar)";
                 if (dr.kind != cdr::DamageReport::None) {
                     cs << "\nSchadensbild: " << dr.headline;
                     if (!dr.advice.empty())
@@ -1510,8 +1520,16 @@ void Pipeline::process_disc(const std::atomic<bool>& stop,
         ae.format  = cfg_.audio_format;
         ae.ar_ok   = ar_ok;
         ae.ar_total = (int)ar_res.size();
+        // Beide Sorten Schaden zaehlen. damaged_ enthaelt Tracks, die zwar
+        // gerippt wurden, aber unlesbare Sektoren hatten; rip_failed die,
+        // die komplett scheiterten. Gezaehlt wurde bisher nur die erste
+        // Sorte — ausgerechnet die Totalausfaelle fehlten also. Eine Disc
+        // mit sieben toten Titeln meldete "beschaedigt: 0" an den Zensus.
         { std::lock_guard<std::mutex> l(damaged_mu_);
-          ae.damaged_tracks = (int)damaged_.size(); }
+          std::set<int> hurt;
+          for (const auto& d : damaged_) hurt.insert(d.first);
+          for (int t : rip_failed)       hurt.insert(t);
+          ae.damaged_tracks = (int)hurt.size(); }
         ae.outcome = aborted ? "abgebrochen" : (ok ? "ok" : "fehler");
         if (pr_done) {
             ae.quality        = (int)pr.quality;

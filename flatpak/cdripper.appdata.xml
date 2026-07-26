@@ -26,6 +26,12 @@
   <developer_name>Dennis</developer_name>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="1.13.1" date="2026-07-26">
+      <description>
+        <p>Die Angabe „Beschädigte Tracks" unterschlug ausgerechnet die schlimmsten Fälle. Intern gibt es zwei Listen: Titel, die zwar gelesen wurden, aber unlesbare Stellen enthielten — und Titel, die vollständig scheiterten. Gezählt wurde nur die erste. Eine Disc, deren erste sieben Titel gar nicht lesbar waren, meldete deshalb „beschädigt: 0", sowohl im Bericht neben dem Album als auch an den Zustands-Zensus.</p>
+        <p>Jetzt zählen beide, und der Bericht weist die Totalausfälle getrennt aus.</p>
+      </description>
+    </release>
     <release version="1.13.0" date="2026-07-26">
       <description>
         <p>Die Zustandskarte einer Disc zeigt jetzt, was beim Rippen tatsächlich passiert ist. Bisher zeichnete sie ausschließlich die Stichproben des Vorab-Scans — bei sechs Proben je Titel sind das auf einer Disc mit dreihunderttausend Sektoren rund hundert Messpunkte. Traf keine davon zufällig einen Kratzer, erschien die Scheibe makellos grün, während daneben „stark zerkratzt" stand. Genau dieser Widerspruch war zu sehen.</p>
