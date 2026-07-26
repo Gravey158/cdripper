@@ -1061,14 +1061,27 @@ ProbeResult disc_probe(const std::string& device,
     return probe_classify(raw, ntracks, disc_end, hung, skips, rr);
 }
 
-std::string scan_svg(const ProbeResult& r) {
+std::string scan_svg(const ProbeResult& r,
+                     const std::vector<ProbeSample>& rip_defects) {
     const double C = 200, R = 180, ri = R * 0.32, ro = R * 0.92;
     std::ostringstream s;
     s << "<svg xmlns='http://www.w3.org/2000/svg' width='400' height='400' "
          "viewBox='0 0 400 400'>\n"
          "<rect width='400' height='400' fill='#1e2127'/>\n"
          "<circle cx='200' cy='200' r='180' fill='#2b2f37'/>\n";
-    if (r.map.empty() || r.lba_max <= r.lba_min) {
+    // Ohne Preflight, aber mit Rip-Fehlern laesst sich der Radius aus den
+    // Fehlern selbst aufspannen — besser als "kein Scan" auf einer Disc, von
+    // der man sehr wohl etwas weiss.
+    int lba_lo = r.lba_min, lba_hi = r.lba_max;
+    if (lba_hi <= lba_lo && !rip_defects.empty()) {
+        lba_lo = lba_hi = rip_defects.front().lba;
+        for (const auto& d : rip_defects) {
+            lba_lo = std::min(lba_lo, d.lba);
+            lba_hi = std::max(lba_hi, d.lba);
+        }
+        if (lba_hi <= lba_lo) lba_hi = lba_lo + 1;
+    }
+    if ((r.map.empty() && rip_defects.empty()) || lba_hi <= lba_lo) {
         s << "<text x='200' y='205' fill='#9aa0aa' font-family='sans-serif' "
              "font-size='16' text-anchor='middle'>kein Scan</text>\n";
     } else {
@@ -1077,8 +1090,8 @@ std::string scan_svg(const ProbeResult& r) {
                   [](const ProbeSample& a, const ProbeSample& b){
                       return a.lba < b.lba; });
         auto rad = [&](int lba){
-            double n = (double)(lba - r.lba_min) /
-                       (double)(r.lba_max - r.lba_min);
+            double n = (double)(lba - lba_lo) / (double)(lba_hi - lba_lo);
+            if (n < 0) n = 0; else if (n > 1) n = 1;
             return ri + n * (ro - ri);
         };
         auto col = [](int st){
@@ -1094,6 +1107,18 @@ std::string scan_svg(const ProbeResult& r) {
               << "' fill='none' stroke='" << col(st)
               << "' stroke-width='" << w << "'/>\n";
         }
+
+        // Die beim Rippen sektorgenau gefundenen Fehler darueberlegen. Sie
+        // sind die belastbarere Aussage: Der Rip hat jeden Sektor gelesen,
+        // der Preflight nur Stichproben. Deshalb kraeftiger gezeichnet und
+        // mit einer Mindestbreite, damit ein einzelner Fehlersektor auf
+        // einer 300.000-Sektoren-Scheibe ueberhaupt sichtbar wird.
+        for (const auto& d : rip_defects) {
+            const double rr = rad(d.lba);
+            s << "<circle cx='200' cy='200' r='" << rr
+              << "' fill='none' stroke='" << (d.status >= 2 ? "#e74c3c" : "#f0b849")
+              << "' stroke-width='3' stroke-opacity='0.95'/>\n";
+        }
     }
     s << "<circle cx='200' cy='200' r='" << ri * 0.55
       << "' fill='#1e2127'/>\n"
@@ -1104,7 +1129,13 @@ std::string scan_svg(const ProbeResult& r) {
       << "<text x='200' y='392' fill='#9aa0aa' font-family='sans-serif' "
          "font-size='12' text-anchor='middle'>"
          "aussen=Disc-Rand · gruen ok · gelb langsam · rot Lesefehler"
-         "</text>\n</svg>\n";
+         "</text>\n";
+    if (!rip_defects.empty())
+        s << "<text x='200' y='376' fill='#9aa0aa' font-family='sans-serif' "
+             "font-size='11' text-anchor='middle'>"
+          << rip_defects.size()
+          << " Fehlerstelle(n) beim Rippen — kräftige Ringe</text>\n";
+    s << "</svg>\n";
     return s.str();
 }
 

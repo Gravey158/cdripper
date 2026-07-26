@@ -1424,9 +1424,12 @@ void Pipeline::process_disc(const std::atomic<bool>& stop,
                 } catch (...) {
                     CDR_WARN("upload", "Zustandsbericht nicht uebertragen");
                 }
-                if (pr_done && !pr.map.empty()) {
+                // Karte auch ohne Preflight schreiben, sobald der Rip
+                // Fehlerstellen gefunden hat — die sind die eigentliche
+                // Aussage ueber den Zustand der Disc.
+                if ((pr_done && !pr.map.empty()) || !rip_defmap.empty()) {
                     fs::path sp = work / "disc-scan.svg";
-                    { std::ofstream sf(sp); sf << scan_svg(pr); }
+                    { std::ofstream sf(sp); sf << scan_svg(pr, rip_defmap); }
                     auto sseg = album_segs();
                     sseg.push_back(sanitize(snap.artist + " - " +
                                    snap.title) + " - disc-scan.svg");
@@ -1552,10 +1555,12 @@ void Pipeline::process_disc(const std::atomic<bool>& stop,
                     ae.quality, ae.ar_ok, ae.ar_total, ae.damaged_tracks,
                     "rip", cfg_.mb_useragent,
                     snap.disc_number, snap.disc_total,
-                    // Scan-Karte nur, wenn ein Preflight-Scan lief und
-                    // Messpunkte lieferte — sonst wäre das Bild leer.
-                    (pr_done && !pr.map.empty()) ? scan_svg(pr)
-                                                 : std::string()) && cb_.onLog)
+                    // Karte mitschicken, sobald es etwas zu zeigen gibt:
+                    // Stichproben aus dem Preflight und/oder die beim Rippen
+                    // gefundenen Fehlerstellen.
+                    ((pr_done && !pr.map.empty()) || !rip_defmap.empty())
+                        ? scan_svg(pr, rip_defmap)
+                        : std::string()) && cb_.onLog)
                 cb_.onLog("CD-Zustand an den Zensus gemeldet.");
         }
     }

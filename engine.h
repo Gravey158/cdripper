@@ -23,7 +23,7 @@ namespace cdr {
 //   PATCH  kleiner Bugfix / kleine Änderung
 // Bei jeder veröffentlichten Änderung hier hochzählen und im lokalen
 // Git-Repo einen passenden Tag setzen (git tag -a vX.Y.Z).
-constexpr const char* VERSION = "1.12.1";
+constexpr const char* VERSION = "1.13.0";
 
 struct Config {
     std::string device        = "/dev/sr0";   // primäres/Single-Laufwerk
@@ -791,7 +791,16 @@ struct ArchiveEntry {
 };
 // Polar-Ring-Visualisierung als SVG (reiner Text, Qt-frei) — für den
 // lokalen Sidecar im Albumverzeichnis. Leere map → Hinweis-SVG.
-std::string scan_svg(const ProbeResult& r);
+// Zeichnet die Scheibe als Ringgrafik: aussen der Disc-Rand, innen der
+// Anfang. Die Grundflaeche stammt aus den Stichproben des Preflight-Scans.
+//
+// rip_defects: die beim eigentlichen Rippen sektorgenau gefundenen Fehler.
+// Ohne sie log die Karte: Der Preflight nimmt nur wenige Stichproben je Titel
+// (bei ~300.000 Sektoren rund hundert Messpunkte), waehrend der Rip jeden
+// Sektor liest. Traf keine Stichprobe zufaellig einen Kratzer, zeigte die
+// Karte eine makellos gruene Scheibe — neben dem Urteil "stark zerkratzt".
+std::string scan_svg(const ProbeResult& r,
+                     const std::vector<ProbeSample>& rip_defects = {});
 
 std::string archive_path();                       // config_dir()/archive.json
 std::vector<ArchiveEntry> load_archive();         // neueste zuletzt

@@ -642,6 +642,40 @@ int main() {
         fs::remove_all(home, ec);
     }
 
+    // ── Scan-Karte: Rip-Fehler muessen sichtbar werden ─────────────────
+    // Die Karte zeichnete nur die Stichproben des Preflight-Scans. Bei sechs
+    // Proben je Titel und 300.000 Sektoren trifft die keinen Kratzer — die
+    // Disc erschien makellos gruen, waehrend daneben "stark zerkratzt" stand.
+    {
+        ProbeResult pr;
+        pr.lba_min = 0; pr.lba_max = 300000;
+        for (int i = 0; i < 20; ++i) pr.map.push_back({ i * 15000, 0 });
+
+        const std::string clean = scan_svg(pr);
+        CHECK(clean.find("kein Scan") == std::string::npos,
+              "Karte mit Stichproben ist nicht leer");
+        CHECK(clean.find("Fehlerstelle") == std::string::npos,
+              "ohne Rip-Fehler keine Fehlerzeile");
+
+        std::vector<ProbeSample> defects = { {120000, 2}, {121500, 2}, {200000, 1} };
+        const std::string marked = scan_svg(pr, defects);
+        CHECK(marked.find("Fehlerstelle") != std::string::npos,
+              "Rip-Fehler werden in der Legende genannt");
+        CHECK(marked.find("#e74c3c") != std::string::npos,
+              "schwerer Lesefehler wird rot markiert");
+        CHECK(marked.size() > clean.size(),
+              "Karte mit Fehlern enthaelt mehr als die ohne");
+
+        // Ohne Preflight, aber mit Rip-Fehlern: trotzdem eine Karte, kein
+        // "kein Scan" — ueber diese Disc weiss man sehr wohl etwas.
+        ProbeResult leer;
+        const std::string only_rip = scan_svg(leer, defects);
+        CHECK(only_rip.find("kein Scan") == std::string::npos,
+              "Rip-Fehler allein ergeben ebenfalls eine Karte");
+        CHECK(scan_svg(leer).find("kein Scan") != std::string::npos,
+              "voellig ohne Daten weiterhin 'kein Scan'");
+    }
+
     std::printf("\n%d OK, %d FAIL\n", g_ok, g_fail);
     return g_fail ? 1 : 0;
 }

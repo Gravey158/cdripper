@@ -26,6 +26,12 @@
   <developer_name>Dennis</developer_name>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="1.13.0" date="2026-07-26">
+      <description>
+        <p>Die Zustandskarte einer Disc zeigt jetzt, was beim Rippen tatsächlich passiert ist. Bisher zeichnete sie ausschließlich die Stichproben des Vorab-Scans — bei sechs Proben je Titel sind das auf einer Disc mit dreihunderttausend Sektoren rund hundert Messpunkte. Traf keine davon zufällig einen Kratzer, erschien die Scheibe makellos grün, während daneben „stark zerkratzt" stand. Genau dieser Widerspruch war zu sehen.</p>
+        <p>Der Rip selbst liest jeden Sektor und kennt daher jede Fehlerstelle sektorgenau. Diese Stellen werden nun als kräftige Ringe über die Grundfläche gelegt und in der Beschriftung gezählt. Und wo gar kein Vorab-Scan lief, entsteht die Karte allein aus den Fehlerstellen des Rips, statt „kein Scan" zu behaupten — über eine Disc, von der man sehr wohl etwas weiß.</p>
+      </description>
+    </release>
     <release version="1.12.1" date="2026-07-26">
       <description>
         <p>Die Kalibrierung zeigt jetzt alle gefundenen Versätze mit ihrer Trefferzahl an, statt nur den Sieger zu nennen. Und wenn mehrere Versätze dieselbe Disc gleich gut erklären, entscheidet der Wert aus der Offset-Registry — sofern er unter den Kandidaten ist.</p>
