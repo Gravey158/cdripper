@@ -81,46 +81,39 @@ jobs:
           path: build-mac/cdripper-*-macos-*.dmg
           retention-days: 30
 
-  # ── Windows: vcpkg + MSVC + WiX MSI ────────────────────────────────────────
-  # Sobald die VM-basierte Erstvalidierung durch ist (siehe windows/SETUP.md),
-  # kann dieser Job auf jedem Push den Build verifizieren. vcpkg-Erstbau
-  # dauert ~30–60 Min, danach via GHA-Cache <5 Min. Initial deshalb auf
-  # workflow_dispatch oder Tag-Push eingeschränkt — bei jedem Main-Push
-  # wäre der Cache-Miss-Erstbau zu teuer.
+  # ── Windows: MSYS2/UCRT64 ──────────────────────────────────────────────────
+  # Vorher MSVC + vcpkg. Das konnte nie funktionieren: libcdio,
+  # libcdio-paranoia und libdiscid existieren als vcpkg-Pakete nicht, das
+  # Manifest listete sie trotzdem, und jeder Lauf brach beim Aufloesen der
+  # Abhaengigkeiten ab ("libcdio does not exist"). MSYS2 liefert alle drei
+  # fertig, dazu Qt6 samt Uebersetzungswerkzeugen.
   windows:
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
     steps:
       - uses: actions/checkout@v7
 
-      - uses: lukka/get-cmake@latest
-
-      - name: vcpkg bootstrap + deps
-        uses: lukka/run-vcpkg@v11
+      - uses: msys2/setup-msys2@v2
         with:
-          # Muss ein voller 40-stelliger Commit-Hash sein. Hier stand der
-          # Release-Name '2024.12.16' — die Action lehnt den ab, und genau
-          # daran ist der Windows-Build bisher in 30 Sekunden gescheitert,
-          # bevor er auch nur eine Zeile übersetzt hat.
-          # cd61e1e = vcpkg-Release 2026.06.24.
-          vcpkgGitCommitId: 'cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3'
-          runVcpkgInstall: true
+          msystem: UCRT64
+          update: true
+          install: >-
+            zip
+          pacboy: >-
+            toolchain:p cmake:p ninja:p pkgconf:p
+            libcdio:p libcdio-paranoia:p libdiscid:p
+            qt6-base:p qt6-tools:p nlohmann-json:p curl:p flac:p
 
-      - name: WiX 6 install
-        run: dotnet tool install --global wix
-
-      - name: Build cdripper.exe
-        shell: pwsh
-        run: ./scripts/build-windows.ps1
-
-      - name: Build .msi
-        shell: pwsh
-        run: ./scripts/build-msi.ps1
+      - name: Build + Tests
+        run: ./scripts/build-windows-msys2.sh
 
       - uses: actions/upload-artifact@v7
         with:
           name: cdripper-windows-x64
-          path: build-windows/cdripper-*-windows-x64.msi
+          path: build-windows/cdripper-*-windows-x64.zip
           retention-days: 30
 
   # ── GitHub Release: bei Tag automatisch erstellen ──────────────────────────
@@ -143,6 +136,6 @@ jobs:
             artifacts/cdripper-linux-flatpak/*.flatpak
             artifacts/cdripper-macos-arm64/*.dmg
             artifacts/cdripper-macos-x86_64/*.dmg
-            artifacts/cdripper-windows-x64/*.msi
+            artifacts/cdripper-windows-x64/*.zip
           generate_release_notes: true
           fail_on_unmatched_files: false

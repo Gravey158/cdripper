@@ -21,10 +21,13 @@ if(MSVC)
   # Die Quelltexte sind UTF-8 (Umlaute in Meldungen, ✓/⚠ in der Oberfläche).
   # MSVC nimmt sonst die Codepage des Rechners an und macht aus „für" Kraut
   # und Rüben — und zwar still, ohne Warnung. /utf-8 setzt Quell- UND
-  # Ausführungszeichensatz.
+  # Ausführungszeichensatz. (GCC/Clang nehmen ohnehin UTF-8 an.)
   add_compile_options(/utf-8)
+endif()
+if(WIN32)
   # NOMINMAX: <windows.h> definiert min/max als Makros und zerlegt damit
-  # jedes std::min/std::max. Wird über libcurl/Qt mit hereingezogen.
+  # jedes std::min/std::max. Wird über libcurl/Qt mit hereingezogen — und
+  # zwar unabhängig vom Compiler, gilt also auch für den MinGW-Build.
   add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 
