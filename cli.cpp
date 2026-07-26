@@ -328,6 +328,19 @@ int run_calibrate(const cdr::Config& cfg) {
 int run_rip_worker(const std::string& device, const std::string& workdir,
                    int speed, bool fast, const std::string& plan_csv,
                    bool test_and_copy) {
+    // Der Worker ist ein eigener Prozess und schreibt in dieselbe Logdatei.
+    // Ohne Kennzeichnung waeren seine Zeilen nicht von denen der Eltern zu
+    // unterscheiden — das Sternchen markiert den Unterprozess.
+    {
+        std::string d = device;
+        const auto sl = d.find_last_of('/');
+        if (sl != std::string::npos) d = d.substr(sl + 1);
+        cdr::set_log_context(d + "*");
+    }
+    CDR_INFO("worker", "Rip-Worker gestartet: " + device +
+             ", Speed " + std::to_string(speed) +
+             (fast ? ", schnell" : "") +
+             (test_and_copy ? ", Test & Copy" : ""));
     std::signal(SIGINT, on_sig);
     std::signal(SIGTERM, on_sig);
     auto line = [](const std::string& s) {

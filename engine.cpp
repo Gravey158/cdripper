@@ -3114,6 +3114,9 @@ static std::string log_dir() {
     return "/tmp/cdripper-logs";
 }
 
+// Schreibt eine fertige Zeile, ohne einen weiteren Zeitstempel davorzusetzen.
+static void log_raw(const std::string& line);
+
 void log_to_file(const std::string& line) {
     // T7: parallele Pipelines → Rotate-Check + localtime (statischer
     // Puffer) sind nicht thread-safe; serialisieren.
@@ -3135,6 +3138,22 @@ void log_to_file(const std::string& line) {
         std::strftime(ts, sizeof ts, "%Y-%m-%d %H:%M:%S",
                       std::localtime(&tt));
         f << "[" << ts << "] " << line << "\n";
+    } catch (...) {}
+}
+
+static void log_raw(const std::string& line) {
+    static std::mutex mu;
+    std::lock_guard<std::mutex> lk(mu);
+    try {
+        std::string dir = log_dir();
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        fs::path lp = fs::path(dir) / "cdripper.log";
+        auto sz = fs::file_size(lp, ec);
+        if (!ec && sz > 2 * 1024 * 1024)
+            fs::rename(lp, fs::path(dir) / "cdripper.log.1", ec);
+        std::ofstream f(lp, std::ios::app);
+        if (f) f << line << "\n";
     } catch (...) {}
 }
 
@@ -3201,7 +3220,9 @@ void log_write(LogLevel l, const char* cat, const std::string& msg) {
         std::to_string(ms.count()) + " " + level_tag(l) + " ";
     if (!t_log_ctx.empty()) line += "[" + t_log_ctx + "] ";
     line += std::string("<") + (cat ? cat : "-") + "> " + msg;
-    log_to_file(line);
+    // log_to_file() wuerde einen zweiten Zeitstempel davorsetzen — unsere
+    // Zeile bringt ihren eigenen mit, samt Millisekunden.
+    log_raw(line);
     // Ab Warnung zusätzlich auf die Fehlerausgabe — im Flatpak landet die im
     // Journal, damit sieht man Probleme auch ohne die Logdatei zu suchen.
     if (l <= LogLevel::Warn) std::cerr << line << "\n";
@@ -3402,7 +3423,28 @@ bool load_tray(const std::string& dev) {
 
 // ───────────────────────────── FLAC ───────────────────────────────────────────
 
+static int run_impl(const std::vector<std::string>& argv);
+
+// Aufruf externer Werkzeuge (flac, metaflac, rsgain, ffmpeg, ssh, smbclient).
+// Scheitert eines davon, sah man bisher nur die Folge — etwa einen Track
+// ohne ReplayGain — nie den Aufruf selbst.
 static int run(const std::vector<std::string>& argv) {
+    if (argv.empty()) return -1;
+    const auto t0 = std::chrono::steady_clock::now();
+    const int rc = run_impl(argv);
+    if (log_enabled(LogLevel::Debug) || rc != 0) {
+        std::string line = argv[0];
+        for (size_t i = 1; i < argv.size(); ++i) line += " " + argv[i];
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t0).count();
+        log_write(rc == 0 ? LogLevel::Debug : LogLevel::Warn, "exec",
+                  "rc=" + std::to_string(rc) + "  " +
+                  std::to_string(ms) + " ms  " + line);
+    }
+    return rc;
+}
+
+static int run_impl(const std::vector<std::string>& argv) {
     if (argv.empty()) return -1;
 #ifdef _WIN32
     // Früher _spawnvp — das quotet Argumente NICHT: ein Pfad mit Leerzeichen
@@ -3731,11 +3773,13 @@ void WebDav::ensure_dirs(const std::vector<std::string>& segs) {
 }
 
 void WebDav::put(const fs::path& local, const std::vector<std::string>& segs) {
+    CDR_TRACE("upload");
     CURL* uc = curl_easy_init();
     std::string url = url_for(base_, uc, segs);
     curl_easy_cleanup(uc);
     std::error_code ec;
     auto sz = (curl_off_t)fs::file_size(local, ec);
+    CDR_DBG("upload", "PUT " + std::to_string((long long)sz) + " B -> " + url);
     FILE* fp = fopen_path(local, "rb");
     if (!fp) throw std::runtime_error(
         "PUT: lokal nicht lesbar: " + local.string());

@@ -5665,6 +5665,12 @@ void SettingsDialog::refreshDriveInfo() {
 }
 
 void SettingsDialog::populateDriveTable() {
+    // Zusammengezogene Zellen zuruecknehmen. Ohne kalibriertes Laufwerk zeigt
+    // die Tabelle unten "— noch keine Kalibrierung —" ueber alle vier Spalten;
+    // dieser Zusammenzug ueberlebt das Neubefuellen. Nach der ersten
+    // Kalibrierung stand deshalb nur der Hersteller da, breitgezogen ueber die
+    // ganze Zeile — Modell, Drive-ID und Offset lagen unsichtbar darunter.
+    driveTbl_->clearSpans();
     auto rows = cdr::list_drive_offsets();
     std::string curId = cdr::drive_id(
         calibDev_->currentData().toString().toStdString());

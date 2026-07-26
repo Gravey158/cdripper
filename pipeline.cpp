@@ -131,6 +131,19 @@ void Pipeline::emit_progress(bool force) {
 
 // ── Disc-Loop ──────────────────────────────────────────────────────────────────
 void Pipeline::run(const std::atomic<bool>& stop, bool once) {
+    // Diesen Thread mit seinem Laufwerk kennzeichnen. Ab hier traegt jede
+    // Protokollzeile aus diesem Strang ihr Geraet — ohne das ist ein
+    // Mitschnitt von drei gleichzeitig laufenden Laufwerken nicht lesbar,
+    // weil sich die Zeilen munter durchmischen. Nur der Basisname ("sr0"),
+    // der volle Pfad blaeht jede Zeile auf.
+    {
+        std::string d = cfg_.device;
+        const auto sl = d.find_last_of('/');
+        if (sl != std::string::npos) d = d.substr(sl + 1);
+        cdr::set_log_context(d);
+    }
+    CDR_INFO("rip", "Pipeline startet fuer " + cfg_.device +
+                    (once ? " (einmalig)" : " (Dauerlauf)"));
     // Laufwerk EINMAL testweise öffnen (existiert es? Rechte da?) und sofort
     // wieder schließen. Früher lebte dieses Drive-Objekt über die gesamte
     // Pipeline-Laufzeit — im Dauerlauf also dauerhaft. Damit stand der
