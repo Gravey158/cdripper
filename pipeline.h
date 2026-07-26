@@ -8,6 +8,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <queue>
@@ -122,6 +123,15 @@ private:
     // AccurateRip (P4b): je Track (v1,v2)-CRC, vom enc-Thread gefüllt
     std::mutex                                       ar_mu_;
     std::vector<std::pair<uint32_t, uint32_t>>       ar_crcs_;
+
+    // Test & Copy: je verifiziertem Track die CRC-32 beider Lesungen.
+    // Vom Rip-Event-Callback gefüllt (RIPTC), gelesen beim Report/Sidecar.
+    // crc2 == 0 ⇒ zweite Lesung fehlgeschlagen (kein Vergleich möglich).
+    struct TcResult { uint32_t crc1 = 0, crc2 = 0;
+                      bool match() const { return crc2 != 0 && crc1 == crc2; }
+                      bool usable() const { return crc1 != 0 && crc2 != 0; } };
+    std::mutex                     tc_mu_;
+    std::map<int, TcResult>        tc_;
 };
 
 } // namespace cdr

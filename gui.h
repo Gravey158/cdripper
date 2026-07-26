@@ -74,7 +74,9 @@ public slots:
 
 signals:
     void waiting(const QString& msg);
-    void discIdent(const QString& id, int tocTracks);
+    // toc = roher libdiscid-TOC-String ("first last leadout off1 …"): die
+    // Disc-Grafik braucht daraus das Sektor→Track-Raster für den Hover.
+    void discIdent(const QString& id, int tocTracks, const QString& toc);
     void albumReady(const QString& albumArtist, const QString& albumTitle,
                     const QString& year, const QStringList& titles,
                     const QStringList& artists);
@@ -162,6 +164,10 @@ private:
     void populateDrives();                       // Laufwerks-Dropdown füllen
     void discWatch();                            // Vorschau beim Einlegen
     void resetDiscState();                       // Auswurf → letzten Stand leeren
+    // Zeilenfarbe der Trackliste an einer Stelle: FEHLER rot, Disc-Hover
+    // blau, gerade bearbeitet in Cover-Farbe, sonst ungetönt.
+    void styleTrackRow(int row);
+    int  hoverTrackRow_ = -1;                     // Zeile unter dem Disc-Hover
     bool hadDisc_ = false;                        // Disc-präsent-Flanke (Auswurf)
     std::thread previewThr_;
     std::atomic<bool> previewBusy_{false};
@@ -264,6 +270,7 @@ private:
     QLabel*     help_ = nullptr;              // Erklärungs-Kasten unten
     QMap<QObject*, QString> helpText_;
     QLineEdit *tmpdir_, *ua_, *musicRoot_, *acoustidKey_, *discogsToken_;
+    QComboBox *language_;        // Oberflächensprache (de/en/auto)
     QComboBox *device_;          // erkannte Laufwerke (Kalibrier-Auswahl)
     QComboBox *readSpeed_;
     QComboBox *scanDensity_;
@@ -274,6 +281,7 @@ private:
     QCheckBox *autoEject_, *chime_, *fastRip_, *lyrics_, *overwrite_;
     QCheckBox *preflight_;
     QCheckBox *accuraterip_;
+    QCheckBox *testAndCopy_;     // jeden Track zweimal lesen + vergleichen
     QSpinBox  *readOffset_;
     QComboBox *calibDev_;        // Laufwerk-Auswahl fürs Kalibrieren (AR-Tab)
     QLabel    *driveLbl_;

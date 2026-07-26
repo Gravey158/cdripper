@@ -4,9 +4,13 @@
 // CHECK-Makro, Exit != 0 bei Fehler.
 #include "../engine.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstdio>
+#include <fstream>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #include <unistd.h>   // getpid (isolierter tmp-Config-Dir im Archiv-Test)
@@ -418,6 +422,139 @@ int main() {
         CHECK(r2.devices.empty(), "RT single → devices leer");
         CHECK_EQ((int)r2.device_list().size(), 1, "RT single device_list 1");
         fs::remove(cp2, ec);
+    }
+
+    // ── T8: TOC-Geometrie (Sektor → Track für die Disc-Grafik) ─────────
+    // Die Disc-Grafik rechnet die Mausposition in einen Sektor zurück und
+    // muss daraus den Track benennen. Golden-TOC = dieselbe Disc wie oben
+    // (Bravo Hits Best of 95), Format "first last leadout off1 off2 …".
+    {
+        const std::string toc =
+            "1 20 352858 0 18373 38245 62720 84305 100073 120840 138653 "
+            "152710 168830 185400 201385 219010 236485 248618 265573 "
+            "283243 304473 322255 338790";
+        TocLayout l = parse_toc(toc);
+        CHECK(l.valid(), "TOC gültig");
+        CHECK_EQ(l.first, 1, "TOC first");
+        CHECK_EQ(l.leadout, 352858, "TOC leadout");
+        CHECK_EQ((int)l.offsets.size(), 20, "TOC 20 Offsets");
+        CHECK_EQ(l.offsets[1], 18373, "TOC offset Track 2");
+        CHECK_EQ(l.end(), 352858, "TOC Ende = leadout");
+        // Grenzen: letzter Sektor von Track 1 vs. erster von Track 2.
+        CHECK_EQ(toc_track_at(l, 0), 1, "Sektor 0 → Track 1");
+        CHECK_EQ(toc_track_at(l, 18372), 1, "Sektor 18372 → Track 1");
+        CHECK_EQ(toc_track_at(l, 18373), 2, "Sektor 18373 → Track 2");
+        CHECK_EQ(toc_track_at(l, 100073), 6, "Sektor 100073 → Track 6");
+        CHECK_EQ(toc_track_at(l, 338790), 20, "Sektor 338790 → Track 20");
+        CHECK_EQ(toc_track_at(l, 352857), 20, "letzter Sektor → Track 20");
+        // Außerhalb der bespielten Fläche: keine Auskunft statt Rateergebnis.
+        CHECK_EQ(toc_track_at(l, 352858), -1, "Leadout → kein Track");
+        CHECK_EQ(toc_track_at(l, -5), -1, "negativer Sektor → kein Track");
+        // Discs, die nicht bei Track 1 beginnen (erste Spur = Daten).
+        TocLayout l2 = parse_toc("2 3 20000 100 9000");
+        CHECK(l2.valid(), "TOC first=2 gültig");
+        CHECK_EQ(toc_track_at(l2, 100), 2, "first=2 → erster Track ist 2");
+        CHECK_EQ(toc_track_at(l2, 9000), 3, "first=2 → zweiter Track ist 3");
+        CHECK_EQ(toc_track_at(l2, 99), -1, "vor dem ersten Offset → keiner");
+        // Kaputte Eingaben liefern ein ungültiges Layout, keine Exception.
+        CHECK(!parse_toc("").valid(), "leerer TOC ungültig");
+        CHECK(!parse_toc("1 20 352858").valid(), "TOC ohne Offsets ungültig");
+        CHECK(!parse_toc("1 3 20000 0 500").valid(),
+              "zu wenige Offsets ungültig");
+        CHECK(!parse_toc("1 3 20000 0 900 500").valid(),
+              "fallende Offsets ungültig");
+        CHECK_EQ(toc_track_at(TocLayout{}, 42), -1,
+                 "leeres Layout → kein Track");
+    }
+
+    // ── Test & Copy: CRC-32 über die reinen WAV-Audiodaten ────────────
+    //    Trägt die ganze Beweislast der Doppellesung — stimmt die Funktion
+    //    nicht, wäre entweder jeder Rip „abweichend" (Fehlalarm) oder jeder
+    //    „verifiziert" (falsche Sicherheit). Golden: CRC-32/IEEE von
+    //    "123456789" ist 0xCBF43926 (der klassische Check-Wert).
+    {
+        std::error_code ec;
+        fs::path dir = fs::temp_directory_path() /
+            ("cdr-tc-" + std::to_string(::getpid()));
+        fs::remove_all(dir, ec);
+        fs::create_directories(dir, ec);
+        auto write_wav = [&](const std::string& name, char hdrfill,
+                             const std::string& payload) {
+            fs::path p = dir / name;
+            std::ofstream f(p, std::ios::binary);
+            std::string hdr(44, hdrfill);           // 44-Byte-WAV-Header
+            f.write(hdr.data(), 44);
+            f.write(payload.data(), (std::streamsize)payload.size());
+            return p;
+        };
+        fs::path a = write_wav("a.wav", 'R', "123456789");
+        CHECK_EQ((unsigned long)wav_audio_crc32(a), 0xCBF43926ul,
+                 "CRC-32 Golden-Wert 123456789");
+        // Header wird ignoriert: gleiche Audiodaten ⇒ gleiche Prüfsumme.
+        // (Sonst würde ein abweichendes Größenfeld eine Abweichung melden.)
+        fs::path b = write_wav("b.wav", 'X', "123456789");
+        CHECK_EQ(wav_audio_crc32(a), wav_audio_crc32(b),
+                 "Header zählt nicht mit");
+        // Ein einziges gekipptes Bit muss auffallen — genau der Fall, den
+        // Test & Copy fangen soll.
+        fs::path c = write_wav("c.wav", 'R', "123456780");
+        CHECK(wav_audio_crc32(a) != wav_audio_crc32(c),
+              "geänderte Audiodaten ⇒ andere Prüfsumme");
+        // Nicht vergleichbar ⇒ 0 (der Aufrufer wertet das als „keine
+        // Prüflesung", nicht als Abweichung).
+        fs::path d = write_wav("d.wav", 'R', "");
+        CHECK_EQ((unsigned long)wav_audio_crc32(d), 0ul,
+                 "nur Header ⇒ 0");
+        CHECK_EQ((unsigned long)wav_audio_crc32(dir / "gibtsnicht.wav"), 0ul,
+                 "fehlende Datei ⇒ 0");
+        // Größer als der 64-KB-Lesepuffer (deckt die Blockschleife ab).
+        fs::path e = write_wav("e.wav", 'R', std::string(200000, 'A'));
+        fs::path f2 = write_wav("f.wav", 'R', std::string(200000, 'A'));
+        CHECK_EQ(wav_audio_crc32(e), wav_audio_crc32(f2),
+                 "200 kB identisch ⇒ gleiche Prüfsumme");
+        fs::remove_all(dir, ec);
+    }
+
+    // ── Test & Copy: Config-Roundtrip (Default AUS) ────────────────────
+    {
+        std::error_code ec;
+        Config d;
+        CHECK(!d.test_and_copy, "test_and_copy Default AUS");
+        fs::path cp = fs::temp_directory_path() /
+            ("cdr-tc-cfg-" + std::to_string(::getpid()) + ".ini");
+        Config w; w.test_and_copy = true;
+        CHECK(save_config(w, cp.string()), "save_config T&C ok");
+        CHECK(load_config(cp.string()).test_and_copy,
+              "RT test_and_copy = true");
+        Config w2;                                  // aus
+        CHECK(save_config(w2, cp.string()), "save_config T&C aus ok");
+        CHECK(!load_config(cp.string()).test_and_copy,
+              "RT test_and_copy = false");
+        fs::remove(cp, ec);
+    }
+
+    // ── MusicBrainz-Torwächter: ein Fenster für alle Laufwerke ─────────
+    // Der eigentliche Zweck: acht Panels dürfen sich nicht gegenseitig in
+    // die 503 treiben. Geprüft wird die Serialisierung ohne Netz — vier
+    // Threads durch das Tor, danach muss mindestens 3 × 1,1 s vergangen
+    // sein (der erste darf sofort durch). Die Obergrenze fängt den Fall,
+    // dass jemand aus Versehen pauschal schlafen lässt.
+    {
+        using clk = std::chrono::steady_clock;
+        cdr::mb_rate_gate();                       // Fenster definiert öffnen
+        const auto t0 = clk::now();
+        std::vector<std::thread> th;
+        std::atomic<int> done{0};
+        for (int i = 0; i < 4; ++i)
+            th.emplace_back([&] { cdr::mb_rate_gate(); ++done; });
+        for (auto& t : th) t.join();
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            clk::now() - t0).count();
+        CHECK(done == 4, "Torwächter lässt alle vier Threads durch");
+        CHECK(ms >= 4 * 1100 - 50,
+              "vier Anfragen brauchen mindestens vier Sekundenfenster");
+        CHECK(ms < 4 * 1100 + 1500,
+              "Torwächter wartet nicht länger als nötig");
     }
 
     std::printf("\n%d OK, %d FAIL\n", g_ok, g_fail);

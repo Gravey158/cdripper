@@ -268,6 +268,9 @@ Config load_config(const std::string& path) {
             else if (k == "musicbrainz_useragent") c.mb_useragent = v;
             else if (k == "acoustid_key")  c.acoustid_key  = v;
             else if (k == "discogs_token") c.discogs_token = v;
+            // Unbekannte Werte absichtlich nicht filtern: fällt in main.cpp
+            // beim Laden des .qm auf Deutsch zurück, statt hier zu meckern.
+            else if (k == "language")      c.language      = v;
             else if (k == "read_speed")    c.read_speed = std::atoi(v.c_str());
             else if (k == "upload_retries") c.upload_retries = std::atoi(v.c_str());
             else if (k == "replaygain")    c.replaygain =
@@ -285,6 +288,8 @@ Config load_config(const std::string& path) {
             else if (k == "fast_rip")      c.fast_rip =
                 (v == "1" || v == "true" || v == "yes");
             else if (k == "accuraterip")   c.accuraterip =
+                (v == "1" || v == "true" || v == "yes");
+            else if (k == "test_and_copy") c.test_and_copy =
                 (v == "1" || v == "true" || v == "yes");
             else if (k == "read_offset")   c.read_offset = std::atoi(v.c_str());
             else if (k == "auto_eject")    c.auto_eject =
@@ -333,6 +338,8 @@ bool save_config(const Config& c, const std::string& path) {
       << "musicbrainz_useragent = " << c.mb_useragent << "\n"
       << "acoustid_key = "   << c.acoustid_key << "\n"
       << "discogs_token = "  << c.discogs_token << "\n"
+      << "# Oberflächensprache: de | en | auto (Systemsprache)\n"
+      << "language = "       << c.language      << "\n"
       << "replaygain = "     << b(c.replaygain) << "\n"
       << "audio_format = "   << c.audio_format  << "\n"
       << "audio_quality = "  << c.audio_quality << "\n"
@@ -342,6 +349,7 @@ bool save_config(const Config& c, const std::string& path) {
       << "jukebox = "        << b(c.jukebox)    << "\n"
       << "fast_rip = "       << b(c.fast_rip)   << "\n"
       << "accuraterip = "    << b(c.accuraterip) << "\n"
+      << "test_and_copy = "  << b(c.test_and_copy) << "\n"
       << "read_offset = "    << c.read_offset   << "\n"
       << "auto_eject = "     << b(c.auto_eject) << "\n"
       << "chime = "          << b(c.chime)      << "\n"
@@ -659,12 +667,14 @@ RipResult rip_session(const std::string& device, const std::string& workdir,
                       int speed, bool fast, int stall_secs,
                       const std::function<void(const std::string&)>& onEvent,
                       const std::function<bool()>& stop,
-                      const std::string& plan_csv, int track_budget_secs) {
+                      const std::string& plan_csv, int track_budget_secs,
+                      bool test_and_copy) {
     std::string self = self_exe_path();
     if (self.empty()) return RipResult::Fatal;
     WorkerSession sess(self, {
         "--rip-worker", device, workdir, std::to_string(speed),
-        fast ? "1" : "0", plan_csv.empty() ? "-" : plan_csv
+        fast ? "1" : "0", plan_csv.empty() ? "-" : plan_csv,
+        test_and_copy ? "1" : "0"
     });
     if (!sess.spawned()) return RipResult::Fatal;
 
@@ -1207,6 +1217,45 @@ static std::optional<std::string> http_get(const std::string& url,
     return body;
 }
 
+// ---------------------------------------------------------------------------
+// MusicBrainz-Anfragen: eine pro Sekunde, prozessweit.
+//
+// MusicBrainz lässt einen Aufruf je Sekunde und Anwendung zu und antwortet
+// sonst mit 503. Bisher schlief jede Anfragestelle nach getaner Arbeit selbst
+// eine Sekunde. Das reicht für ein Laufwerk — aber nicht für acht: Die
+// Wartezeit bremst nur den eigenen Aufrufer, von den übrigen Laufwerken weiß
+// sie nichts. Legt man in zwei Schächten gleichzeitig eine CD ein, gehen
+// beide Erkennungen im selben Moment raus, eine kassiert die 503 und fällt
+// auf die unschärfere TOC-Suche zurück — der Grund, warum Disc 2 einer Box
+// schon einmal die Titel von Disc 1 bekommen hat.
+//
+// Der Torwächter dreht das um: Nicht mehr nach der Anfrage warten, sondern
+// davor — und zwar nur so lange, wie das gemeinsame Zeitfenster es verlangt.
+// Bei einem einzelnen Laufwerk ist die Erkennung dadurch sogar schneller,
+// weil die feste Sekunde Nachlauf entfällt.
+namespace {
+std::mutex g_mb_mu;
+std::chrono::steady_clock::time_point g_mb_last;   // Zeitpunkt der letzten Anfrage
+}  // namespace
+
+void mb_rate_gate() {
+    using namespace std::chrono;
+    std::lock_guard<std::mutex> lk(g_mb_mu);       // hält die Reihenfolge fest
+    const auto now  = steady_clock::now();
+    const auto next = g_mb_last + milliseconds(1100);   // 100 ms Sicherheit
+    if (g_mb_last.time_since_epoch().count() != 0 && now < next)
+        std::this_thread::sleep_for(next - now);
+    g_mb_last = steady_clock::now();
+}
+
+// Für jede Anfrage an musicbrainz.org statt http_get() zu benutzen: wartet,
+// bis das gemeinsame Fenster frei ist, und geht dann sofort raus.
+static std::optional<std::string> mb_get(const std::string& url,
+                                         const std::string& ua, long& code) {
+    mb_rate_gate();
+    return http_get(url, ua, code);
+}
+
 static bool http_download(const std::string& url, const std::string& ua,
                           const fs::path& out) {
     CURL* c = curl_easy_init();
@@ -1425,9 +1474,11 @@ static const json* medium_for(const json& rel, const std::string& discid) {
     return rel["media"].empty() ? nullptr : &rel["media"][0];
 }
 
-// Track-Längen (ms) aus dem TOC-String "first last leadout off1 off2 …".
-// Sektoren → ms: 75 Sektoren = 1 s.
-static std::vector<int> toc_track_ms(const std::string& toc) {
+// TOC-String "first last leadout off1 off2 …" (alles Sektoren) zerlegen.
+// Eine einzige Parse-Stelle für alle TOC-Nutzer (Track-Längen für den
+// Medien-Abgleich, Sektor→Track für die Disc-Grafik) — der Formatverstand
+// soll nicht an zwei Orten getrennt altern.
+TocLayout parse_toc(const std::string& toc) {
     std::istringstream is(toc);
     std::vector<long long> v; long long x;
     while (is >> x) v.push_back(x);
@@ -1436,11 +1487,38 @@ static std::vector<int> toc_track_ms(const std::string& toc) {
     if (first < 1 || last < first) return {};
     std::vector<long long> offs(v.begin() + 3, v.end());
     if ((long long)offs.size() != last - first + 1) return {};
+    // Offsets müssen streng aufsteigen — sonst ist der String kaputt und
+    // jede Sektor-Zuordnung wäre geraten (lieber gar keine Auskunft).
+    for (size_t i = 1; i < offs.size(); ++i)
+        if (offs[i] <= offs[i - 1]) return {};
+    TocLayout l;
+    l.first   = (int)first;
+    l.leadout = (int)leadout;
+    l.offsets.reserve(offs.size());
+    for (long long o : offs) l.offsets.push_back((int)o);
+    return l;
+}
+
+// Welcher Track liegt auf diesem Sektor? Rückwärts suchen: der erste
+// Startoffset, der nicht hinter dem Sektor liegt, ist der Treffer.
+int toc_track_at(const TocLayout& l, int lba) {
+    if (!l.valid()) return -1;
+    if (lba < l.offsets.front() || lba >= l.end()) return -1;
+    for (int i = (int)l.offsets.size() - 1; i >= 0; --i)
+        if (lba >= l.offsets[i]) return l.first + i;
+    return -1;
+}
+
+// Track-Längen (ms) aus dem TOC-String. Sektoren → ms: 75 Sektoren = 1 s.
+static std::vector<int> toc_track_ms(const std::string& toc) {
+    const TocLayout l = parse_toc(toc);
+    if (!l.valid()) return {};
     std::vector<int> out;
-    out.reserve(offs.size());
-    for (size_t i = 0; i < offs.size(); ++i) {
-        const long long end = (i + 1 < offs.size()) ? offs[i + 1] : leadout;
-        out.push_back((int)((end - offs[i]) * 1000 / 75));
+    out.reserve(l.offsets.size());
+    for (size_t i = 0; i < l.offsets.size(); ++i) {
+        const long long end = (i + 1 < l.offsets.size()) ? l.offsets[i + 1]
+                                                         : l.leadout;
+        out.push_back((int)((end - l.offsets[i]) * 1000 / 75));
     }
     return out;
 }
@@ -1520,17 +1598,15 @@ std::vector<Album> mb_release_candidates(const std::string& discid,
     std::string url = "https://musicbrainz.org/ws/2/discid/" + discid +
                       "?fmt=json&inc=recordings+artist-credits+genres+"
                       "labels+release-groups";
-    // MusicBrainz lässt nur eine Anfrage pro Sekunde zu und antwortet bei
-    // Überschreitung mit 503. Genau das passiert, wenn direkt nach einer
-    // fertigen CD die nächste eingelegt wird: Der exakte Disc-ID-Abgleich
-    // scheitert, es bleibt nur die TOC-Suche — und die kann bei Doppel-Alben
-    // die falsche Disc erwischen. Deshalb hier bis zu drei Anläufe mit
-    // wachsender Pause, bevor wir zurückfallen.
+    // Das Sekundenfenster hält mb_get() ein — auch über mehrere Laufwerke
+    // hinweg. Trotzdem bleiben die drei Anläufe: Antwortet MusicBrainz
+    // trotzdem mit 503 (fremde Last, Wartung), scheitert der exakte
+    // Disc-ID-Abgleich, und es bliebe nur die TOC-Suche — die bei
+    // Doppel-Alben die falsche Disc erwischen kann.
     long code = 0;
     std::optional<std::string> body;
     for (int attempt = 0; attempt < 3; ++attempt) {
-        body = http_get(url, ua, code);
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+        body = mb_get(url, ua, code);
         if (body && code == 200) break;
         if (code != 503 && code != 429 && code != 0) break;   // echter Fehler
         std::this_thread::sleep_for(std::chrono::seconds(2 + attempt * 2));
@@ -1575,8 +1651,7 @@ std::vector<Album> mb_release_candidates(const std::string& discid,
             "&fmt=json&inc=recordings+artist-credits+genres+"
             "labels+release-groups";
         long fc = 0;
-        auto fb = http_get(furl, ua, fc);
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+        auto fb = mb_get(furl, ua, fc);
         if (fb && fc == 200) {
             json fj;
             try { fj = json::parse(*fb); } catch (...) { fj = json(); }
@@ -1713,9 +1788,8 @@ static std::vector<ReleaseHit> mb_run_release_query(const std::string& lucene,
     std::string q = esc(c, lucene);
     curl_easy_cleanup(c);
     long code = 0;
-    auto body = http_get("https://musicbrainz.org/ws/2/release/?query=" + q +
-                         "&fmt=json&limit=25", ua, code);
-    std::this_thread::sleep_for(std::chrono::seconds(1));
+    auto body = mb_get("https://musicbrainz.org/ws/2/release/?query=" + q +
+                       "&fmt=json&limit=25", ua, code);
     if (!body || code != 200) return out;
     json j;
     try { j = json::parse(*body); } catch (...) { return out; }
@@ -1950,10 +2024,9 @@ std::optional<Album> mb_release_by_id(const std::string& mbid, int want_tracks,
                                       const std::string& ua) {
     if (mbid.empty()) return std::nullopt;
     long code = 0;
-    auto body = http_get("https://musicbrainz.org/ws/2/release/" + mbid +
+    auto body = mb_get("https://musicbrainz.org/ws/2/release/" + mbid +
         "?fmt=json&inc=recordings+artist-credits+genres+labels+"
         "release-groups", ua, code);
-    std::this_thread::sleep_for(std::chrono::seconds(1));
     if (!body || code != 200) return std::nullopt;
     json r;
     try { r = json::parse(*body); } catch (...) { return std::nullopt; }
@@ -2003,10 +2076,9 @@ std::optional<Album> mb_release_enriched(const std::string& mbid, int want_track
     if (mbid.empty()) return std::nullopt;
     long code = 0;
     // Wie mb_release_by_id, aber zusätzlich url-rels (für den Discogs-Link).
-    auto body = http_get("https://musicbrainz.org/ws/2/release/" + mbid +
+    auto body = mb_get("https://musicbrainz.org/ws/2/release/" + mbid +
         "?fmt=json&inc=recordings+artist-credits+genres+labels+"
         "release-groups+url-rels", ua, code);
-    std::this_thread::sleep_for(std::chrono::seconds(1));
     if (!body || code != 200) return std::nullopt;
     json r;
     try { r = json::parse(*body); } catch (...) { return std::nullopt; }
@@ -2165,9 +2237,8 @@ static std::string mb_release_group_id(const std::string& rid,
                                        const std::string& ua) {
     if (rid.empty()) return "";
     long code = 0;
-    auto body = http_get("https://musicbrainz.org/ws/2/release/" + rid +
-                         "?fmt=json&inc=release-groups", ua, code);
-    std::this_thread::sleep_for(std::chrono::seconds(1));   // MB-Ratelimit (1/s)
+    auto body = mb_get("https://musicbrainz.org/ws/2/release/" + rid +
+                       "?fmt=json&inc=release-groups", ua, code);
     if (!body || code != 200) return "";
     try {
         json j = json::parse(*body);
@@ -2588,6 +2659,37 @@ void ar_crc_file(const fs::path& wav, bool first, bool last, int offset,
     v2 = (uint32_t)a2;
 }
 
+uint32_t wav_audio_crc32(const fs::path& wav) {
+    std::ifstream f(wav, std::ios::binary);
+    if (!f) return 0;
+    f.seekg(0, std::ios::end);
+    std::streamoff sz = f.tellg();
+    if (sz <= 44) return 0;                 // nur Header / leer → kein Vergleich
+    f.seekg(44, std::ios::beg);
+    // Tabelle einmalig aufbauen (reflektiertes Polynom 0xEDB88320) — spart
+    // gegenüber der Bit-für-Bit-Schleife den Faktor 8, und die Funktion
+    // läuft über zwei volle Tracks (~60 MB) pro Test-&-Copy-Durchgang.
+    static const std::vector<uint32_t> tab = [] {
+        std::vector<uint32_t> t(256);
+        for (uint32_t i = 0; i < 256; ++i) {
+            uint32_t c = i;
+            for (int k = 0; k < 8; ++k)
+                c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+            t[i] = c;
+        }
+        return t;
+    }();
+    uint32_t crc = 0xFFFFFFFFu;
+    std::vector<char> buf(1 << 16);
+    while (f) {
+        f.read(buf.data(), (std::streamsize)buf.size());
+        std::streamsize got = f.gcount();
+        for (std::streamsize i = 0; i < got; ++i)
+            crc = tab[(crc ^ (unsigned char)buf[i]) & 0xFF] ^ (crc >> 8);
+    }
+    return crc ^ 0xFFFFFFFFu;
+}
+
 std::vector<ArMatch> ar_lookup(
     const ArIds& ids,
     const std::vector<std::pair<uint32_t, uint32_t>>& crcs,
@@ -2942,7 +3044,8 @@ bool registry_submit_condition(const std::string& base_url,
                                int quality, int ar_ok, int ar_total,
                                int damaged, const std::string& kind,
                                const std::string& ua,
-                               int disc_no, int disc_total) {
+                               int disc_no, int disc_total,
+                               const std::string& scan_svg) {
     if (base_url.empty() || disc_id.empty()) return false;
     std::string thumb;                          // CAA front-250, klein
     if (!mb_release_id.empty()) {
@@ -2957,6 +3060,10 @@ bool registry_submit_condition(const std::string& base_url,
               {"ar_total", ar_total}, {"damaged", damaged}, {"kind", kind}};
     if (disc_no    > 0) j["disc_no"]    = disc_no;
     if (disc_total > 0) j["disc_total"] = disc_total;
+    // Scan-Karte mitschicken: In der Registry lässt sich der Zustand einer
+    // Disc damit ansehen statt nur als Wort ("grenzwertig") zu lesen.
+    if (!scan_svg.empty() && scan_svg.size() < 300000)
+        j["scan_svg_b64"] = b64(scan_svg);
     if (!thumb.empty()) j["thumb_b64"] = thumb;
     long code = 0;
     auto r = http_post_json(reg_base(base_url) + "/api/condition",

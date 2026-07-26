@@ -17,6 +17,17 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
+if(MSVC)
+  # Die Quelltexte sind UTF-8 (Umlaute in Meldungen, ✓/⚠ in der Oberfläche).
+  # MSVC nimmt sonst die Codepage des Rechners an und macht aus „für" Kraut
+  # und Rüben — und zwar still, ohne Warnung. /utf-8 setzt Quell- UND
+  # Ausführungszeichensatz.
+  add_compile_options(/utf-8)
+  # NOMINMAX: <windows.h> definiert min/max als Makros und zerlegt damit
+  # jedes std::min/std::max. Wird über libcurl/Qt mit hereingezogen.
+  add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(CDIO     REQUIRED libcdio)
 pkg_check_modules(CDDA     REQUIRED libcdio_cdda)
@@ -33,6 +44,13 @@ set(CORE_SRC engine.cpp pipeline.cpp cli.cpp main.cpp)
 find_package(Qt6 QUIET COMPONENTS Widgets)
 if(NOT Qt6_FOUND)
   find_package(Qt5 QUIET COMPONENTS Widgets)
+endif()
+
+# LinguistTools (lupdate/lrelease) sind separat paketiert (Debian:
+# qt6-tools-dev-tools). Fehlen sie, wird ohne eingebettete Übersetzungen
+# gebaut — die App ist dann immer deutsch, statt dass der Build scheitert.
+if(Qt6_FOUND)
+  find_package(Qt6 QUIET COMPONENTS LinguistTools)
 endif()
 
 set(QT_LIBS "")
@@ -62,6 +80,29 @@ endif()
 if(Qt6_FOUND OR Qt5_FOUND)
   target_compile_definitions(cdripper PRIVATE HAVE_QT=1)
   target_link_libraries(cdripper PRIVATE ${QT_LIBS})
+endif()
+
+# ── Übersetzungen (i18n) ──────────────────────────────────────────────────────
+# Quellsprache ist Deutsch: die tr("…")-Texte im Code SIND die deutsche
+# Fassung, deshalb gibt es kein cdripper_de.ts. Jede weitere Sprache bekommt
+# ein .ts unter translations/; qt_add_translations kompiliert daraus .qm und
+# legt sie als Qt-Ressource unter :/i18n/ ins Binary (kein Extra-File neben
+# der EXE / im .app-Bundle, das mitinstalliert werden müsste).
+#
+#   Texte einsammeln/aktualisieren:  cmake --build build --target update_translations
+#   Übersetzen:                      linguist translations/cdripper_en.ts
+#   (Die .qm entstehen automatisch beim normalen Build.)
+if(Qt6_FOUND AND Qt6LinguistTools_FOUND)
+  qt_add_translations(cdripper
+    TS_FILES translations/cdripper_en.ts
+    RESOURCE_PREFIX "/i18n"
+    # -no-obsolete hält die .ts-Dateien klein: gelöschte Texte fliegen raus,
+    # statt als <translation type="obsolete"> ewig mitgeschleppt zu werden.
+    LUPDATE_OPTIONS -no-obsolete -locations none)
+  message(STATUS "Qt LinguistTools gefunden — Übersetzungen werden eingebettet.")
+elseif(Qt6_FOUND)
+  message(STATUS "Qt LinguistTools fehlen — Build ohne Übersetzungen (nur Deutsch). "
+                 "Für i18n: 'sudo apt install qt6-tools-dev-tools'.")
 endif()
 
 target_include_directories(cdripper PRIVATE

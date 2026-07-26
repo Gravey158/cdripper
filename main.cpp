@@ -20,7 +20,8 @@ int run_cli(const cdr::Config& cfg, bool once);   // cli.cpp
 int run_calibrate(const cdr::Config& cfg);        // cli.cpp
 int run_rip_worker(const std::string& dev, const std::string& work,
                    int speed, bool fast,
-                   const std::string& defer_csv);  // cli.cpp (Subprozess)
+                   const std::string& defer_csv,
+                   bool test_and_copy);            // cli.cpp (Subprozess)
 int run_probe_worker(const std::string& dev, int start_track,
                      int density);              // cli.cpp
 
@@ -28,8 +29,43 @@ int run_probe_worker(const std::string& dev, int start_track,
 #include <QApplication>
 #include <QLockFile>
 #include <QDir>
+#include <QLibraryInfo>
+#include <QLocale>
 #include <QMessageBox>
+#include <QTranslator>
 #include "gui.h"
+
+// ── Übersetzungen laden ──────────────────────────────────────────────────────
+// Die deutschen Texte stehen als Quelltext direkt im Code (tr("…")), es gibt
+// also KEIN cdripper_de.qm — ohne geladene Übersetzung ist die App deutsch.
+// Für jede andere Sprache liegt ein .qm im Qt-Ressourcensystem unter
+// :/i18n/ (eingebettet von qt_add_translations, siehe CMakeLists.txt).
+//
+// Die QTranslator-Objekte müssen die App überleben, weil Qt sie nicht
+// besitzt — deshalb sind sie hier static und nicht lokal in main().
+// Zusätzlich zur App-Übersetzung wird die von Qt mitgelieferte für
+// Standard-Dialoge (qtbase_*) geladen, sonst blieben Knöpfe wie
+// "Abbrechen"/"Cancel" in QFileDialog & Co. in der falschen Sprache.
+static void install_translators(QApplication& app, const std::string& lang_cfg) {
+    static QTranslator app_tr, qt_tr;
+
+    // "auto" = Systemsprache; alles andere ist der Sprachcode aus der Config.
+    const QLocale locale = (lang_cfg.empty() || lang_cfg == "auto")
+        ? QLocale::system()
+        : QLocale(QString::fromStdString(lang_cfg));
+
+    // Deutsch ist die Quellsprache — nichts zu laden, das spart auch den
+    // (harmlosen, aber verwirrenden) Fehlschlag beim Suchen nach cdripper_de.
+    if (locale.language() != QLocale::German) {
+        if (app_tr.load(locale, QStringLiteral("cdripper"), QStringLiteral("_"),
+                        QStringLiteral(":/i18n")))
+            app.installTranslator(&app_tr);
+    }
+    // qtbase_de gibt es sehr wohl — Qts eigene Quellsprache ist Englisch.
+    if (qt_tr.load(locale, QStringLiteral("qtbase"), QStringLiteral("_"),
+                   QLibraryInfo::path(QLibraryInfo::TranslationsPath)))
+        app.installTranslator(&qt_tr);
+}
 #endif
 
 #ifdef __APPLE__
@@ -86,7 +122,10 @@ int main(int argc, char** argv) {
         int rc = run_rip_worker(argv[2], argv[3],
                                 std::atoi(argv[4]),
                                 std::string(argv[5]) == "1",
-                                argc >= 7 ? argv[6] : "-");
+                                argc >= 7 ? argv[6] : "-",
+                                // Test & Copy (argv[7]): fehlt bei alten
+                                // Aufrufern → aus, wie bisher.
+                                argc >= 8 && std::string(argv[7]) == "1");
         cdr::curl_global_teardown();
         return rc;
     }
@@ -207,8 +246,14 @@ int main(int argc, char** argv) {
 #endif
         if (_is_gui) {
             QApplication _a(argc, argv);
+            install_translators(_a, cfg.language);
+            // Erst hier übersetzt: die stderr-Zeile oben geht in ein
+            // Terminal/Log und bleibt bewusst in der Quellsprache.
             QMessageBox::information(nullptr, "CD Ripper",
-                QString::fromStdString(_msg));
+                QCoreApplication::translate("main",
+                    "CD Ripper läuft bereits (PID %1).\n"
+                    "Bitte das bereits offene Fenster nutzen.")
+                    .arg(_pid));
         }
         return 3;
     }
@@ -236,6 +281,9 @@ int main(int argc, char** argv) {
         QApplication app(argc, argv);
         app.setApplicationName("CD Ripper");
         app.setApplicationVersion(cdr::VERSION);
+        // Vor dem Bau irgendeines Widgets: tr() liefert sonst noch die
+        // Quelltexte und die Oberfläche wäre halb übersetzt.
+        install_translators(app, cfg.language);
 #ifdef __APPLE__
         cdripper_sparkle_init();   // Auto-Update-Check (24h, siehe Info.plist)
 #endif

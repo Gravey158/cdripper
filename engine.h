@@ -23,7 +23,7 @@ namespace cdr {
 //   PATCH  kleiner Bugfix / kleine Änderung
 // Bei jeder veröffentlichten Änderung hier hochzählen und im lokalen
 // Git-Repo einen passenden Tag setzen (git tag -a vX.Y.Z).
-constexpr const char* VERSION = "1.9.29";
+constexpr const char* VERSION = "1.10.0";
 
 struct Config {
     std::string device        = "/dev/sr0";   // primäres/Single-Laufwerk
@@ -47,6 +47,13 @@ struct Config {
     // Leer = Discogs-Suche aus (Discogs deckt v. a. Promos/Maxis/Singles ab,
     // die MusicBrainz oft fehlen). Nur für die manuelle Metadaten-Suche.
     std::string discogs_token;
+    // Sprache der Oberfläche: "de" | "en" | "auto". "auto" nimmt die
+    // Systemsprache (QLocale::system()). Wird NUR beim Start ausgewertet —
+    // Qt kann geladene Übersetzungen nicht rückwirkend auf schon gebaute
+    // Widgets anwenden, deshalb erfordert ein Wechsel einen Neustart.
+    // Bleibt bewusst in der Config (nicht in QSettings), damit die
+    // Einstellung mit dem Profil mitwandert wie alles andere auch.
+    std::string language      = "de";
     bool        dry_run       = false;  // rippen/encoden, aber nicht hochladen
     int         read_speed    = 0;      // 0 = Laufwerks-Default; kleiner (z.B.
                                         // 4/8) = bessere Recovery zerkratzter CDs
@@ -68,6 +75,12 @@ struct Config {
     bool        jukebox       = false;  // Auto-Rip sobald Disc erkannt (GUI)
     bool        fast_rip      = false;  // erst schnell lesen, FULL nur bei Fehler
     bool        accuraterip   = true;   // CRC gegen AccurateRip-DB prüfen
+    // Test & Copy (EAC/dbPoweramp-Standard): jeden Track ZWEIMAL lesen und
+    // die Prüfsummen beider Durchgänge vergleichen. Stimmen sie überein, ist
+    // der Rip auch ohne AccurateRip verifiziert — der einzige Beweis, den es
+    // für Pressungen gibt, die AR gar nicht kennt (Maxis, Promos, Sampler).
+    // Default AUS, weil es die Rip-Zeit verdoppelt.
+    bool        test_and_copy = false;
     int         read_offset   = 0;      // Drive-Sample-Offset (AccurateRip)
     bool        auto_eject    = true;   // CD nach Fertig auswerfen
     bool        chime         = false;  // Ton bei Disc fertig
@@ -161,7 +174,35 @@ DiscIdent read_disc_ident(const std::string& device);
 // Non-throwing: gibt MB-Disc-ID zurück oder "" (für die Warteschleife).
 std::string probe_disc_id(const std::string& device) noexcept;
 
+// ── TOC-Geometrie: welcher Track liegt auf welchem Sektor? ─────────────────────
+// Der libdiscid-TOC-String ist "first last leadout off1 off2 …" (alles in
+// Sektoren/LBA). Daraus lässt sich für jede Position der Disc der Track
+// bestimmen, der dort physisch liegt — genau das braucht die Disc-Grafik,
+// um beim Drüberfahren mit der Maus zu sagen, welcher Song betroffen ist.
+struct TocLayout {
+    int              first   = 0;   // Nummer des ersten Tracks (praktisch immer 1)
+    int              leadout = 0;   // Ende der letzten Spur (Sektor)
+    std::vector<int> offsets;       // Startsektor je Track, aufsteigend
+    bool valid() const { return first >= 1 && !offsets.empty(); }
+    // Ende der bespielten Fläche — leadout, notfalls hinter dem letzten Start.
+    int end() const {
+        if (offsets.empty()) return leadout;
+        return leadout > offsets.back() ? leadout : offsets.back() + 1;
+    }
+};
+// Zerlegt den TOC-String; bei unplausiblen Angaben kommt ein Layout mit
+// valid()==false zurück (nie eine Exception — Aufrufer sind GUI-Pfade).
+TocLayout parse_toc(const std::string& toc);
+// Track-NUMMER (first…last) für einen Sektor, oder -1 außerhalb der Disc.
+int toc_track_at(const TocLayout& l, int lba);
+
 // ── Metadaten-Quellen (Fallback-Kette wird vom Pipeline orchestriert) ──────────
+// Wartet, bis das gemeinsame MusicBrainz-Zeitfenster (eine Anfrage pro
+// Sekunde, prozessweit über alle Laufwerke) frei ist. Jede MB-Anfrage der
+// Engine geht hier durch; öffentlich nur, damit die Serialisierung testbar
+// ist — von außen gibt es keinen Grund, sie selbst zu rufen.
+void mb_rate_gate();
+
 std::optional<Album> mb_lookup(const std::string& discid, const std::string& ua,
                                const std::string& toc = "",
                                std::string* source = nullptr);
@@ -330,6 +371,16 @@ ArIds ar_ids_from_toc(const std::vector<int>& offsets_frames,
 void ar_crc_file(const fs::path& wav, bool first, bool last, int offset,
                  uint32_t& v1, uint32_t& v2);
 
+// ── Test & Copy ────────────────────────────────────────────────────────────────
+// Schlichte CRC-32 (IEEE, wie EAC sie als „Copy CRC"/„Test CRC" ausweist)
+// über die reinen Audiodaten einer WAV — also ab Byte 44, ohne Header und
+// ohne Offset-Korrektur. Bewusst NICHT die AccurateRip-Prüfsumme: die
+// trimmt Disc-Anfang/-Ende und verschiebt um den Laufwerks-Offset, was für
+// den Vergleich ZWEIER Lesungen desselben Laufwerks nur Rauschen wäre.
+// Hier zählt einzig: sind beide Durchgänge bitgenau identisch?
+// 0 = Datei fehlt/leer/zu kurz (dann ist kein Vergleich möglich).
+uint32_t wav_audio_crc32(const fs::path& wav);
+
 // Alle bekannten CRCs (über alle Pressungen) je Track — für Offset-Kalibrierung.
 std::vector<std::vector<uint32_t>> ar_db_crcs(const ArIds& ids,
                                               const std::string& ua);
@@ -393,7 +444,10 @@ bool registry_submit_condition(const std::string& base_url,
                                // Disc im Set (0 = unbekannt): erst damit lassen
                                // sich die Discs einer Box im Zensus
                                // auseinanderhalten.
-                               int disc_no = 0, int disc_total = 0);
+                               int disc_no = 0, int disc_total = 0,
+                               // Scan-Karte (SVG-Quelltext) aus dem
+                               // Preflight-Scan; leer = keine.
+                               const std::string& scan_svg = std::string());
 
 // Laufwerksklappe direkt steuern (ioctl). Best effort.
 bool eject_device(const std::string& device);
@@ -559,12 +613,17 @@ enum class RipResult { Ok, Stalled, Aborted, Fatal };
 // track_budget_secs > 0: ein EINZELNER Track, der länger als das Budget
 // braucht (zerkratzte Disc grindet zwar mit Fortschritt, aber endlos),
 // wird ebenfalls als Stalled abgebrochen → Skip-ahead macht weiter.
+// test_and_copy=true: der Worker liest jeden Track ein zweites Mal und
+// meldet beide CRC-32 als `RIPTC <idx> <crc1> <crc2>` (Fortschritt der
+// Prüflesung als `RIPTEST <idx> <promille>`). Achtung beim Budget: es gilt
+// pro RIPSTART, deckt also BEIDE Durchgänge ab → Aufrufer verdoppeln.
 RipResult rip_session(const std::string& device, const std::string& workdir,
                       int speed, bool fast, int stall_secs,
                       const std::function<void(const std::string&)>& onEvent,
                       const std::function<bool()>& stop,
                       const std::string& plan_csv = std::string(),
-                      int track_budget_secs = 0);
+                      int track_budget_secs = 0,
+                      bool test_and_copy = false);
 
 // ── Preflight Disc-Quality-Scan ────────────────────────────────────────────────
 // Wie rip_session, aber Worker = `--probe-worker DEV`; Watchdog-geschützt

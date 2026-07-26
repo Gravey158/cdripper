@@ -320,10 +320,14 @@ int run_calibrate(const cdr::Config& cfg) {
 // ── Rip-Worker-Subprozess (T8) ─────────────────────────────────────────────────
 // Läuft als eigener Prozess `cdripper --rip-worker DEV WORKDIR SPEED FAST`.
 // stdout = Protokoll (zeilenweise, geflusht); WAVs nach WORKDIR/<idx>.wav.
+// Letztes Argument (0|1) = Test & Copy: jeder Track wird ein zweites Mal
+// gelesen, beide CRC-32 gehen als `RIPTC <idx> <crc1> <crc2>` raus (crc2=0 ⇒
+// Prüflesung fehlgeschlagen, kein Vergleich möglich).
 // Hängt dieser Prozess im D-State, killt der Elternprozess ihn — die App
 // selbst bleibt responsiv (genau das ist der Zweck).
 int run_rip_worker(const std::string& device, const std::string& workdir,
-                   int speed, bool fast, const std::string& plan_csv) {
+                   int speed, bool fast, const std::string& plan_csv,
+                   bool test_and_copy) {
     std::signal(SIGINT, on_sig);
     std::signal(SIGTERM, on_sig);
     auto line = [](const std::string& s) {
@@ -381,9 +385,10 @@ int run_rip_worker(const std::string& device, const std::string& workdir,
             default: break;                       // 'd' → Basis beibehalten
         }
         line("RIPSTART " + std::to_string(at.index));
+        const fs::path wav = fs::path(workdir) /
+                             (std::to_string(at.index) + ".wav");
         try {
-            long bad = rip->rip(at,
-                fs::path(workdir) / (std::to_string(at.index) + ".wav"),
+            long bad = rip->rip(at, wav,
                 [&](double f) {
                     line("RIP " + std::to_string(at.index) + " " +
                          std::to_string((int)(f * 1000)));
@@ -393,6 +398,57 @@ int run_rip_worker(const std::string& device, const std::string& workdir,
                     line("DEFECT " + std::to_string(lba) + " " +
                          std::to_string(sev));
                 });
+            // ── Test & Copy ──────────────────────────────────────────────
+            // Zweite, unabhängige Lesung DESSELBEN Tracks; identische CRCs
+            // beweisen den Rip auch ohne AccurateRip. Die Prüfsumme MUSS
+            // hier im Worker gebildet werden: sobald der Elternprozess
+            // RIPDONE sieht, encodiert er den Track und löscht die WAV —
+            // dann wäre der erste Durchgang nicht mehr vergleichbar.
+            // Speed/Modus bleiben unverändert, damit beide Lesungen unter
+            // denselben Bedingungen stattfinden.
+            // Der Laufwerks-Cache (typ. 1–8 MB) kann die zweite Lesung
+            // nicht fälschen: ein Track ist mit ~30–50 MB um ein Vielfaches
+            // größer, der Cache ist längst überschrieben.
+            if (test_and_copy && !g_stop) {
+                uint32_t c1 = cdr::wav_audio_crc32(wav);
+                fs::path tw = fs::path(workdir) /
+                              (std::to_string(at.index) + ".tc.wav");
+                uint32_t c2 = 0;
+                try {
+                    rip->rip(at, tw,
+                        [&](double f) {
+                            line("RIPTEST " + std::to_string(at.index) + " " +
+                                 std::to_string((int)(f * 1000)));
+                        },
+                        [] { return g_stop.load(); },
+                        // DEFECT auch aus der Prüflesung melden: die
+                        // Schadensdiagnose dedupliziert je LBA, doppelte
+                        // Meldungen verfälschen also nichts — neu
+                        // gefundene Stellen verbessern die Karte.
+                        [&](int lba, int sev) {
+                            line("DEFECT " + std::to_string(lba) + " " +
+                                 std::to_string(sev));
+                        });
+                    c2 = cdr::wav_audio_crc32(tw);
+                } catch (const std::exception& e) {
+                    // Prüflesung gescheitert: c2 bleibt 0 ⇒ der Elternteil
+                    // wertet das als „nicht verifizierbar", nicht als
+                    // Abweichung. Der Rip selbst bleibt gültig.
+                    if (std::string(e.what()) == "abgebrochen") {
+                        std::error_code ce; fs::remove(tw, ce);
+                        return 2;
+                    }
+                } catch (...) {
+                    // Auch alles Nicht-std::exception hier abfangen: sonst
+                    // liefe es in den äußeren Handler und meldete RIPERR für
+                    // einen Track, der längst fehlerfrei gerippt ist. Die
+                    // Prüflesung darf den ersten Durchgang nie entwerten.
+                }
+                std::error_code re; fs::remove(tw, re);   // Platz sofort frei
+                line("RIPTC " + std::to_string(at.index) + " " +
+                     std::to_string((unsigned long)c1) + " " +
+                     std::to_string((unsigned long)c2));
+            }
             line("RIPDONE " + std::to_string(at.index) + " " +
                  std::to_string(bad));
         } catch (const std::exception& e) {

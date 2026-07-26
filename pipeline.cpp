@@ -720,6 +720,13 @@ void Pipeline::process_disc(const std::atomic<bool>& stop,
                 {
                     long long est = tot * 2352LL;          // WAV-Rohgröße
                     long long flac_est = (long long)(est * 0.6);
+                    // Test & Copy hält kurzzeitig eine zweite Kopie des
+                    // gerade geprüften Tracks vor (<idx>.tc.wav). Nicht die
+                    // ganze Disc doppelt, aber der längste Track kommt
+                    // obendrauf — bei knappem tmpdir der Unterschied
+                    // zwischen „warnt" und „bricht mittendrin ab".
+                    if (cfg_.test_and_copy && n > 0)
+                        est += (tot * 2352LL) / n;
                     long long tf = fs_free_bytes(cfg_.tmpdir);
                     if (tf >= 0 && tf < est / 3 && cb_.onLog)
                         cb_.onLog("⚠ Wenig Platz in tmpdir (" +
@@ -746,6 +753,7 @@ void Pipeline::process_disc(const std::atomic<bool>& stop,
                   damaged_.clear(); }
                 { std::lock_guard<std::mutex> l(ar_mu_);
                   ar_crcs_.assign(n, { 0u, 0u }); }
+                { std::lock_guard<std::mutex> l(tc_mu_); tc_.clear(); }
                 rip_start_ = now_s();
                 emit_progress(true);
                 for (int i = 1; i <= n; ++i)
@@ -813,6 +821,42 @@ void Pipeline::process_disc(const std::atomic<bool>& stop,
                 }
                 emit_progress(false);
             }
+        } else if (ln.rfind("RIPTEST ", 0) == 0) {
+            // Zweite Lesung (Test & Copy). Bewusst OHNE sectors_done_ —
+            // der Gesamtfortschritt zählt die Disc, nicht die Lesungen;
+            // sonst liefe der Balken pro Track zweimal hoch. Der Nutzer
+            // sieht die Prüflesung am Track-Status.
+            int idx = 0, pm = 0;
+            if (std::sscanf(ln.c_str(), "RIPTEST %d %d", &idx, &pm) == 2 &&
+                idx >= 1 && cb_.onTrack)
+                cb_.onTrack(idx, TrackState::Ripping, pm / 1000.0,
+                            "Prüflesung 2/2 (Test & Copy)");
+        } else if (ln.rfind("RIPTC ", 0) == 0) {
+            unsigned long c1 = 0, c2 = 0; int idx = 0;
+            if (std::sscanf(ln.c_str(), "RIPTC %d %lu %lu",
+                            &idx, &c1, &c2) == 3 && idx >= 1) {
+                TcResult t{ (uint32_t)c1, (uint32_t)c2 };
+                { std::lock_guard<std::mutex> l(tc_mu_); tc_[idx] = t; }
+                if (cb_.onLog) {
+                    char c1s[16], cb[64];
+                    std::snprintf(c1s, sizeof c1s, "%08X", (unsigned)c1);
+                    std::snprintf(cb, sizeof cb, "%08X != %08X",
+                                  (unsigned)c1, (unsigned)c2);
+                    if (t.match())
+                        cb_.onLog("Track " + std::to_string(idx) +
+                            ": Test & Copy ✓ — beide Lesungen identisch "
+                            "(CRC " + c1s + ").");
+                    else if (!t.usable())
+                        cb_.onLog("Track " + std::to_string(idx) +
+                            ": Test & Copy nicht möglich — zweite Lesung "
+                            "fehlgeschlagen.");
+                    else
+                        cb_.onLog("⚠ Track " + std::to_string(idx) +
+                            ": Test & Copy ABWEICHUNG (CRC " + cb + ") — "
+                            "die beiden Lesungen unterscheiden sich, der "
+                            "Rip dieses Tracks ist NICHT verlässlich.");
+                }
+            }
         } else if (ln.rfind("RIPDONE ", 0) == 0) {
             int idx = 0; long bad = 0;
             // Parse-Guard: kaputte/verschränkte Worker-Zeile ⇒ idx bliebe 0,
@@ -836,6 +880,21 @@ void Pipeline::process_disc(const std::atomic<bool>& stop,
                               "Aussetzer möglich.");
                 std::lock_guard<std::mutex> l(damaged_mu_);
                 damaged_.push_back({ idx, bad });
+            }
+            // Test & Copy-Verdikt an denselben Status hängen (RIPTC kam
+            // direkt davor) — so steht es sofort in Tabelle/Statuszeile,
+            // auch wenn die Disc gar nicht in AccurateRip ist.
+            {
+                std::lock_guard<std::mutex> l(tc_mu_);
+                auto ti = tc_.find(idx);
+                if (ti != tc_.end()) {
+                    std::string s = ti->second.match()
+                        ? "Test & Copy ✓ verifiziert"
+                        : (!ti->second.usable()
+                            ? "Test & Copy: Prüflesung fehlgeschlagen"
+                            : "⚠ Test & Copy: ABWEICHUNG — Rip unsicher!");
+                    warn = warn.empty() ? s : warn + " · " + s;
+                }
             }
             // Defekt-Band rot markieren (bleibt über dem Fortschritts-
             // Overlay sichtbar). „Sauber" braucht keine Zelle mehr — das
@@ -936,6 +995,11 @@ void Pipeline::process_disc(const std::atomic<bool>& stop,
             if (kv.second == 'r') defer_log.push_back(kv.first);
         }
     }
+    if (cfg_.test_and_copy && cb_.onLog)
+        cb_.onLog("Test & Copy aktiv — jeder Track wird zweimal gelesen und "
+                  "beide Lesungen verglichen. Das dauert ungefähr doppelt "
+                  "so lange, verifiziert den Rip aber unabhängig von "
+                  "AccurateRip.");
     if (cb_.onLog && !plan.empty()) {
         std::string dl;
         for (size_t i = 0; i < defer_log.size(); ++i)
@@ -951,12 +1015,22 @@ void Pipeline::process_disc(const std::atomic<bool>& stop,
     // über alle Runs (enc_q.close erst NACH der Schleife).
     RipResult rr = RipResult::Ok;
     int rskips = 0; const int MAX_RSKIPS = 3;
+    // Das Budget gilt pro RIPSTART und umfasst bei Test & Copy BEIDE
+    // Lesungen — sonst würde der Watchdog einen völlig gesunden Track
+    // mitten in der Prüflesung als Hänger abschießen.
+    // Vorher deckeln: recovery_budget_min kommt per atoi aus der Config
+    // (die GUI begrenzt auf 60, eine handeditierte .ini nicht). Ohne
+    // Deckel liefe Minuten × 60 × 2 in einen Signed-Overflow — und
+    // undefiniertes Verhalten wäre hier ein Absturz mitten im Rip.
+    const int budget_min = cfg_.recovery_budget_min > 0
+        ? std::min(cfg_.recovery_budget_min, 24 * 60) : 0;   // max. 1 Tag
+    const int track_budget = budget_min > 0
+        ? budget_min * 60 * (cfg_.test_and_copy ? 2 : 1) : 0;
     for (;;) {
         rr = rip_session(cfg_.device, work.string(),
                          rip_speed, rip_fast, 90, onEvent, stopfn,
-                         serialize_plan(),
-                         cfg_.recovery_budget_min > 0
-                             ? cfg_.recovery_budget_min * 60 : 0);
+                         serialize_plan(), track_budget,
+                         cfg_.test_and_copy);
         if (rr != RipResult::Stalled) break;     // Ok/Aborted/Fatal → fertig
         int hung = (last_started > 0 && !is_settled(last_started))
                        ? last_started : 0;
@@ -1034,11 +1108,24 @@ void Pipeline::process_disc(const std::atomic<bool>& stop,
                 // Match (read_offset?)" verleumden — sie wurden gar nicht
                 // gerippt, da gibt es nichts abzugleichen. Deren Status
                 // (z.B. „bereits vorhanden") so stehen lassen.
+                // Test & Copy anhängen statt überschreiben: der AR-Status
+                // kommt zuletzt und würde das Verdikt der Doppellesung
+                // sonst aus Tabelle/Tooltip verdrängen — gerade bei
+                // Discs, die AR nicht kennt, ist es die einzige Aussage.
+                std::string tcs;
+                { std::lock_guard<std::mutex> l(tc_mu_);
+                  auto ti = tc_.find(m.track);
+                  if (ti != tc_.end())
+                      tcs = ti->second.match() ? " · Test & Copy ✓"
+                          : (!ti->second.usable()
+                              ? " · Test & Copy: Prüflesung fehlgeschlagen"
+                              : " · ⚠ Test & Copy: ABWEICHUNG"); }
                 if (cb_.onTrack && (ripped || good))
                     cb_.onTrack(m.track, TrackState::Done, 1.0,
-                        good ? ("AccurateRip ✓ conf " +
+                        (good ? ("AccurateRip ✓ conf " +
                                 std::to_string(m.confidence))
-                             : "AccurateRip: kein DB-Vergleich (Rip ok)");
+                             : std::string("AccurateRip: kein DB-Vergleich "
+                                           "(Rip ok)")) + tcs);
             }
             if (cb_.onLog) {
                 std::string msg = "AccurateRip: " + std::to_string(ar_ok) +
@@ -1106,6 +1193,35 @@ void Pipeline::process_disc(const std::atomic<bool>& stop,
         if (!dr.advice.empty()) cb_.onLog("Empfehlung: " + dr.advice);
     }
 
+    // Test & Copy-Bilanz einmal ziehen (Log, Rip-Report, Zustands-Sidecar).
+    // tc_diff > 0 ist das ernsteste Ergebnis, das dieser Rip liefern kann:
+    // zwei Lesungen derselben Rille haben unterschiedliche Daten geliefert.
+    std::map<int, TcResult> tc_snap;
+    { std::lock_guard<std::mutex> l(tc_mu_); tc_snap = tc_; }
+    int tc_match = 0, tc_diff = 0, tc_fail = 0;
+    for (const auto& kv : tc_snap) {
+        if (kv.second.match())            ++tc_match;
+        else if (!kv.second.usable())     ++tc_fail;
+        else                              ++tc_diff;
+    }
+    if (!tc_snap.empty() && cb_.onLog) {
+        cb_.onLog("Test & Copy: " + std::to_string(tc_match) + "/" +
+                  std::to_string((int)tc_snap.size()) +
+                  " Tracks durch Doppellesung verifiziert" +
+                  (tc_fail ? " (" + std::to_string(tc_fail) +
+                             " ohne Prüflesung)" : "") + ".");
+        if (tc_diff > 0) {
+            std::string tl;
+            for (const auto& kv : tc_snap)
+                if (!kv.second.match() && kv.second.usable())
+                    tl += (tl.empty() ? "" : ", ") + std::to_string(kv.first);
+            cb_.onLog("⚠⚠ Test & Copy ABWEICHUNG bei Track(s) " + tl +
+                      " — die zwei Lesungen sind NICHT identisch. Diese "
+                      "Tracks sind nicht verlässlich gerippt: Disc reinigen "
+                      "und mit read_speed=4 neu rippen.");
+        }
+    }
+
     // B1: EAC-Style Rip-Report neben das Album legen (best effort).
     if (!stop.load()) {
         try {
@@ -1150,10 +1266,41 @@ void Pipeline::process_disc(const std::atomic<bool>& stop,
                         break;
                     }
                 if (!arknown) r << "AccurateRip: n/a";
+                // Test & Copy steht bewusst NEBEN dem AR-Ergebnis: bei
+                // Discs, die AR nicht kennt, ist es der einzige Beweis.
+                auto ti = tc_snap.find(i);
+                if (ti != tc_snap.end()) {
+                    char cb[48];
+                    std::snprintf(cb, sizeof cb, "%08X",
+                                  (unsigned)ti->second.crc1);
+                    if (ti->second.match())
+                        r << "  ·  Test & Copy OK (CRC " << cb << ")";
+                    else if (!ti->second.usable())
+                        r << "  ·  Test & Copy: Prüflesung fehlgeschlagen";
+                    else {
+                        char cb2[48];
+                        std::snprintf(cb2, sizeof cb2, "%08X",
+                                      (unsigned)ti->second.crc2);
+                        r << "  ·  ⚠ Test & Copy ABWEICHUNG (" << cb
+                          << " != " << cb2 << ") — NICHT verlässlich";
+                    }
+                }
                 auto it = dmgmap.find(i);
                 if (it != dmgmap.end())
                     r << "  ·  " << it->second << " unlesbare Sektoren";
                 r << "\n";
+            }
+            if (!tc_snap.empty()) {
+                r << "----------------------------------------\n"
+                  << "Test & Copy : " << tc_match << "/"
+                  << (int)tc_snap.size() << " Tracks durch zwei "
+                  << "unabhängige Lesungen verifiziert";
+                if (tc_fail) r << " (" << tc_fail << " ohne Prüflesung)";
+                r << "\n";
+                if (tc_diff > 0)
+                    r << "⚠ WARNUNG    : " << tc_diff << " Track(s) mit "
+                      << "abweichenden Prüfsummen — dieser Rip ist NICHT "
+                      << "verlässlich.\n";
             }
             if (dr.kind != cdr::DamageReport::None) {
                 r << "----------------------------------------\n"
@@ -1196,8 +1343,22 @@ void Pipeline::process_disc(const std::atomic<bool>& stop,
                     cs << " (Scan unvollständig — Laufwerk hing)";
                 bool ab = stop.load();
                 bool okk = (failed.load() == 0) && !ab;
-                cs << "\nAccurateRip: " << ar_ok << "/" << (int)ar_res.size()
-                   << "\nBeschädigte Tracks: " << dmgn;
+                cs << "\nAccurateRip: " << ar_ok << "/" << (int)ar_res.size();
+                // Test & Copy gehört in die Zustands-Doku: es ist die
+                // AR-unabhängige Aussage über die Lesbarkeit DIESER Disc
+                // in DIESEM Laufwerk — genau das dokumentiert der Sidecar.
+                if (!tc_snap.empty()) {
+                    cs << "\nTest & Copy: " << tc_match << "/"
+                       << (int)tc_snap.size() << " verifiziert";
+                    if (tc_fail) cs << " (" << tc_fail << " ohne Prüflesung)";
+                    if (tc_diff > 0)
+                        cs << "\n⚠ ACHTUNG : " << tc_diff << " Track(s) "
+                              "lieferten bei zwei Lesungen unterschiedliche "
+                              "Daten — Rip NICHT verlässlich";
+                } else if (cfg_.test_and_copy) {
+                    cs << "\nTest & Copy: keine Prüflesung zustande gekommen";
+                }
+                cs << "\nBeschädigte Tracks: " << dmgn;
                 if (dr.kind != cdr::DamageReport::None) {
                     cs << "\nSchadensbild: " << dr.headline;
                     if (!dr.advice.empty())
@@ -1261,6 +1422,17 @@ void Pipeline::process_disc(const std::atomic<bool>& stop,
             dmg += " — Disc reinigen & mit read_speed=4 neu rippen.";
         }
     }
+    // Test & Copy in die Abschluss-/Statuszeile: die Abweichung ist die
+    // wichtigste Nachricht des ganzen Laufs und darf nicht nur im Log stehen.
+    if (!aborted && !tc_snap.empty()) {
+        if (tc_diff > 0)
+            dmg += "  ⚠ Test & Copy: " + std::to_string(tc_diff) +
+                   " Track(s) mit abweichenden Prüfsummen — Rip NICHT "
+                   "verlässlich!";
+        else
+            dmg += "  ✓ Test & Copy: " + std::to_string(tc_match) + "/" +
+                   std::to_string((int)tc_snap.size()) + " verifiziert.";
+    }
     // Archiv-/Zustands-Eintrag (jeder Rip eine Zeile, auch Fehler/Abbruch
     // — gerade die sind als Zustands-Doku wertvoll). Best effort.
     {
@@ -1319,7 +1491,11 @@ void Pipeline::process_disc(const std::atomic<bool>& stop,
                     ae.artist, ae.title, ae.year, snap.mb_release_id,
                     ae.quality, ae.ar_ok, ae.ar_total, ae.damaged_tracks,
                     "rip", cfg_.mb_useragent,
-                    snap.disc_number, snap.disc_total) && cb_.onLog)
+                    snap.disc_number, snap.disc_total,
+                    // Scan-Karte nur, wenn ein Preflight-Scan lief und
+                    // Messpunkte lieferte — sonst wäre das Bild leer.
+                    (pr_done && !pr.map.empty()) ? scan_svg(pr)
+                                                 : std::string()) && cb_.onLog)
                 cb_.onLog("CD-Zustand an den Zensus gemeldet.");
         }
     }
