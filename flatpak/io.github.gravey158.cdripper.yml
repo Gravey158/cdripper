@@ -1,6 +1,6 @@
 # cdripper Flatpak-Manifest.
 #
-# Baut alle nicht-Runtime-Deps aus Quelle gegen org.kde.Sdk//6.7 — die KDE-
+# Baut alle nicht-Runtime-Deps aus Quelle gegen org.kde.Sdk//6.11 — die KDE-
 # Platform liefert Qt6 + glibc + libcurl + libstdc++ ABI-stabil. Damit
 # entfällt das Cross-Distro-libcrypt-Drama, das AppImage-Builds auf Bazzite
 # zerlegt hat.
@@ -16,9 +16,17 @@
 #   kubectl -n flatpak-repo cp <ostree-export> ...:/repo/
 app-id: io.github.gravey158.cdripper
 runtime: org.kde.Platform
-runtime-version: '6.7'
+runtime-version: '6.11'
 sdk: org.kde.Sdk
 command: cdripper
+
+# Ab KDE-Sdk 6.11 steckt CMake 4 im SDK, und das verweigert Projekte mit
+# cmake_minimum_required < 3.5 (libdiscid 0.6.4 u. a.). Die Env-Variable
+# hebt das Policy-Minimum für alle cmake-ninja-Module an, ohne die
+# Upstream-Quellen zu patchen.
+build-options:
+  env:
+    CMAKE_POLICY_VERSION_MINIMUM: '3.5'
 
 # Sandbox-Berechtigungen. Minimal aber funktionsfähig.
 finish-args:

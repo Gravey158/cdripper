@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Baut cdripper als Flatpak gegen die KDE-Platform 6.7-Runtime.
+# Baut cdripper als Flatpak gegen die KDE-Platform 6.11-Runtime.
 #
 # Läuft in der distrobox `ripper` auf Bazzite. Voraussetzungen:
 #   - flatpak-builder (dnf install flatpak-builder)
-#   - org.kde.Platform//6.7 + org.kde.Sdk//6.7 (flatpak --user install)
+#   - org.kde.Platform//6.11 + org.kde.Sdk//6.11 (flatpak --user install)
 #
 # Output:
 #   - Lokales OSTree-Repo:  build-flatpak/repo/  (zum Push auf flatpak.x2-pandora.de)
