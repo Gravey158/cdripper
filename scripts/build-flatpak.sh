@@ -70,7 +70,21 @@ flatpak build-bundle "$REPO" "$BUNDLE" "$APP_ID" master
 
 ls -lh "$BUNDLE"
 echo
-echo "Fertig."
+echo "Build fertig."
 echo "  Test-Install:  flatpak --user install --reinstall $BUNDLE"
 echo "  Repo-Pfad:     $REPO"
-echo "  Push auf Cluster:  kubectl -n flatpak-repo cp <repo-content> ...:/repo/"
+
+# Direkt veröffentlichen, wenn dieser Rechner an den Cluster kommt
+# (latitude01 hat kubectl + kubeconfig, bazzite nicht). Sonst blieb das
+# Repo monatelang auf einem alten Stand, während lokal neuere Builds
+# installiert waren — `flatpak update` scheitert dann mit „Update is
+# older than current version". Abschalten: CDRIPPER_NO_PUBLISH=1.
+echo
+if [ -n "${CDRIPPER_NO_PUBLISH:-}" ]; then
+  echo ">>> Publish übersprungen (CDRIPPER_NO_PUBLISH gesetzt)."
+elif command -v kubectl >/dev/null && kubectl -n flatpak-repo get pod -l app=flatpak-repo -o name >/dev/null 2>&1; then
+  "$SRC/scripts/publish-flatpak.sh"
+else
+  echo ">>> Kein Cluster-Zugang von hier — Publish manuell nachholen:"
+  echo "    scripts/publish-flatpak.sh  (auf einem Rechner mit kubectl)"
+fi
